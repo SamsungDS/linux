@@ -422,6 +422,7 @@ enum req_flag_bits {
 	 */
 	/* for REQ_OP_WRITE_ZEROES: */
 	__REQ_NOUNMAP,		/* do not free blocks when zeroing */
+	__REQ_COPY,		/* copy request */
 
 	__REQ_NR_BITS,		/* stops here */
 };
@@ -451,6 +452,7 @@ enum req_flag_bits {
 
 #define REQ_DRV		(__force blk_opf_t)(1ULL << __REQ_DRV)
 #define REQ_SWAP	(__force blk_opf_t)(1ULL << __REQ_SWAP)
+#define REQ_COPY	((__force blk_opf_t)(1ULL << __REQ_COPY))
 
 #define REQ_FAILFAST_MASK \
 	(REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT | REQ_FAILFAST_DRIVER)
@@ -482,6 +484,11 @@ static inline void bio_set_op_attrs(struct bio *bio, enum req_op op,
 static inline bool op_is_write(blk_opf_t op)
 {
 	return !!(op & (__force blk_opf_t)1);
+}
+
+static inline bool op_is_copy(blk_opf_t op)
+{
+	return (op & REQ_COPY);
 }
 
 /*
@@ -541,6 +548,43 @@ struct blk_rq_stat {
 	u64 max;
 	u32 nr_samples;
 	u64 batch;
+};
+
+typedef void (cio_iodone_t)(void *private, int status);
+
+struct cio {
+	struct range_entry *ranges;
+	struct task_struct *waiter;     /* waiting task (NULL if none) */
+	atomic_t refcount;
+	int io_err;
+	cio_iodone_t *endio;		/* applicable for async operation */
+	void *private;			/* applicable for async operation */
+
+	/* For zoned device we maintain a linked list of IO submissions.
+	 * This is to make sure we maintain the order of submissions.
+	 * Otherwise some reads completing out of order, will submit writes not
+	 * aligned with zone write pointer.
+	 */
+	struct list_head list;
+	spinlock_t list_lock;
+};
+
+enum copy_io_status {
+	REQ_COPY_READ_PROGRESS,
+	REQ_COPY_READ_COMPLETE,
+	REQ_COPY_WRITE_PROGRESS,
+};
+
+struct copy_ctx {
+	struct cio *cio;
+	struct work_struct dispatch_work;
+	struct bio *write_bio;
+	atomic_t refcount;
+	int range_idx;			/* used in error/partial completion */
+
+	/* For zoned device linked list is maintained. Along with state of IO */
+	struct list_head list;
+	enum copy_io_status status;
 };
 
 #endif /* __LINUX_BLK_TYPES_H */
