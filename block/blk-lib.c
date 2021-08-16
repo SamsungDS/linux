@@ -115,6 +115,364 @@ int blkdev_issue_discard(struct block_device *bdev, sector_t sector,
 }
 EXPORT_SYMBOL(blkdev_issue_discard);
 
+/*
+ * For synchronous copy offload/emulation, wait and process all in-flight BIOs.
+ * This must only be called once all bios have been issued so that the refcount
+ * can only decrease. This just waits for all bios to make it through
+ * bio_copy_*_write_end_io. IO errors are propagated through cio->io_error.
+ */
+static int cio_await_completion(struct cio *cio)
+{
+	int ret = 0;
+
+	atomic_dec(&cio->refcount);
+
+	if (cio->endio)
+		return 0;
+
+	if (atomic_read(&cio->refcount)) {
+		__set_current_state(TASK_UNINTERRUPTIBLE);
+		blk_io_schedule();
+	}
+
+	ret = cio->io_err;
+	kfree(cio);
+
+	return ret;
+}
+
+static void blk_copy_offload_write_end_io(struct bio *bio)
+{
+	struct copy_ctx *ctx = bio->bi_private;
+	struct cio *cio = ctx->cio;
+	sector_t clen;
+	int ri = ctx->range_idx;
+
+	if (bio->bi_status) {
+		cio->io_err = blk_status_to_errno(bio->bi_status);
+		clen = (bio->bi_iter.bi_sector << SECTOR_SHIFT) -
+			cio->ranges[ri].dst;
+		cio->ranges[ri].comp_len = min_t(sector_t, clen,
+				cio->ranges[ri].comp_len);
+	}
+	__free_page(bio->bi_io_vec[0].bv_page);
+	bio_put(bio);
+
+	if (atomic_dec_and_test(&ctx->refcount))
+		kfree(ctx);
+	if (atomic_dec_and_test(&cio->refcount)) {
+		if (cio->endio) {
+			cio->endio(cio->private, cio->io_err);
+			kfree(cio);
+		} else
+			blk_wake_io_task(cio->waiter);
+	}
+}
+
+static void blk_copy_offload_read_end_io(struct bio *read_bio)
+{
+	struct copy_ctx *ctx = read_bio->bi_private;
+	struct cio *cio = ctx->cio;
+	sector_t clen;
+	int ri = ctx->range_idx;
+	unsigned long flags;
+
+	if (read_bio->bi_status) {
+		cio->io_err = blk_status_to_errno(read_bio->bi_status);
+		goto err_rw_bio;
+	}
+
+	/* For zoned device, we check if completed bio is first entry in linked
+	 * list,
+	 * if yes, we start the worker to submit write bios.
+	 * if not, then we just update status of bio in ctx,
+	 * once the worker gets scheduled, it will submit writes for all
+	 * the consecutive REQ_COPY_READ_COMPLETE bios.
+	 */
+	if (bdev_is_zoned(ctx->write_bio->bi_bdev)) {
+		spin_lock_irqsave(&cio->list_lock, flags);
+		ctx->status = REQ_COPY_READ_COMPLETE;
+		if (ctx == list_first_entry(&cio->list,
+					struct copy_ctx, list)) {
+			spin_unlock_irqrestore(&cio->list_lock, flags);
+			schedule_work(&ctx->dispatch_work);
+			goto free_read_bio;
+		}
+		spin_unlock_irqrestore(&cio->list_lock, flags);
+	} else
+		schedule_work(&ctx->dispatch_work);
+
+free_read_bio:
+	bio_put(read_bio);
+
+	return;
+
+err_rw_bio:
+	clen = (read_bio->bi_iter.bi_sector << SECTOR_SHIFT) -
+					cio->ranges[ri].src;
+	cio->ranges[ri].comp_len = min_t(sector_t, clen,
+					cio->ranges[ri].comp_len);
+	__free_page(read_bio->bi_io_vec[0].bv_page);
+	bio_put(ctx->write_bio);
+	bio_put(read_bio);
+	if (atomic_dec_and_test(&ctx->refcount))
+		kfree(ctx);
+	if (atomic_dec_and_test(&cio->refcount)) {
+		if (cio->endio) {
+			cio->endio(cio->private, cio->io_err);
+			kfree(cio);
+		} else
+			blk_wake_io_task(cio->waiter);
+	}
+}
+
+static void blk_copy_dispatch_work_fn(struct work_struct *work)
+{
+	struct copy_ctx *ctx = container_of(work, struct copy_ctx,
+			dispatch_work);
+
+	submit_bio(ctx->write_bio);
+}
+
+static void blk_zoned_copy_dispatch_work_fn(struct work_struct *work)
+{
+	struct copy_ctx *ctx = container_of(work, struct copy_ctx,
+			dispatch_work);
+	struct cio *cio = ctx->cio;
+	unsigned long flags = 0;
+
+	atomic_inc(&cio->refcount);
+	spin_lock_irqsave(&cio->list_lock, flags);
+
+	while (!list_empty(&cio->list)) {
+		ctx = list_first_entry(&cio->list, struct copy_ctx, list);
+
+		if (ctx->status == REQ_COPY_READ_PROGRESS)
+			break;
+
+		atomic_inc(&ctx->refcount);
+		ctx->status = REQ_COPY_WRITE_PROGRESS;
+		spin_unlock_irqrestore(&cio->list_lock, flags);
+		submit_bio(ctx->write_bio);
+		spin_lock_irqsave(&cio->list_lock, flags);
+
+		list_del(&ctx->list);
+		if (atomic_dec_and_test(&ctx->refcount))
+			kfree(ctx);
+	}
+
+	spin_unlock_irqrestore(&cio->list_lock, flags);
+	if (atomic_dec_and_test(&cio->refcount))
+		blk_wake_io_task(cio->waiter);
+}
+
+/*
+ * blk_copy_offload	- Use device's native copy offload feature.
+ * we perform copy operation by sending 2 bio.
+ * 1. First we send a read bio with REQ_COPY flag along with a token and source
+ * and length. Once read bio reaches driver layer, device driver adds all the
+ * source info to token and does a fake completion.
+ * 2. Once read opration completes, we issue write with REQ_COPY flag with same
+ * token. In driver layer, token info is used to form a copy offload command.
+ *
+ * For conventional devices we submit write bio independentenly once read
+ * completes. For zoned devices , reads can complete out of order, so we
+ * maintain a linked list and submit writes in the order, reads are submitted.
+ */
+static int blk_copy_offload(struct block_device *src_bdev,
+		struct block_device *dst_bdev, struct range_entry *ranges,
+		int nr, cio_iodone_t end_io, void *private, gfp_t gfp_mask)
+{
+	struct cio *cio;
+	struct copy_ctx *ctx;
+	struct bio *read_bio, *write_bio;
+	struct page *token;
+	sector_t src_blk, copy_len, dst_blk;
+	sector_t rem, max_copy_len;
+	int ri = 0, ret = 0;
+	unsigned long flags;
+
+	cio = kzalloc(sizeof(struct cio), GFP_KERNEL);
+	if (!cio)
+		return -ENOMEM;
+	cio->ranges = ranges;
+	atomic_set(&cio->refcount, 1);
+	cio->waiter = current;
+	cio->endio = end_io;
+	cio->private = private;
+	if (bdev_is_zoned(dst_bdev)) {
+		INIT_LIST_HEAD(&cio->list);
+		spin_lock_init(&cio->list_lock);
+	}
+
+	max_copy_len = min(bdev_max_copy_sectors(src_bdev),
+			bdev_max_copy_sectors(dst_bdev)) << SECTOR_SHIFT;
+
+	for (ri = 0; ri < nr; ri++) {
+		cio->ranges[ri].comp_len = ranges[ri].len;
+		src_blk = ranges[ri].src;
+		dst_blk = ranges[ri].dst;
+		for (rem = ranges[ri].len; rem > 0; rem -= copy_len) {
+			copy_len = min(rem, max_copy_len);
+
+			token = alloc_page(gfp_mask);
+			if (unlikely(!token)) {
+				ret = -ENOMEM;
+				goto err_token;
+			}
+
+			ctx = kzalloc(sizeof(struct copy_ctx), gfp_mask);
+			if (!ctx) {
+				ret = -ENOMEM;
+				goto err_ctx;
+			}
+			read_bio = bio_alloc(src_bdev, 1, REQ_OP_READ | REQ_COPY
+					| REQ_SYNC | REQ_NOMERGE, gfp_mask);
+			if (!read_bio) {
+				ret = -ENOMEM;
+				goto err_read_bio;
+			}
+			write_bio = bio_alloc(dst_bdev, 1, REQ_OP_WRITE
+					| REQ_COPY | REQ_SYNC | REQ_NOMERGE,
+					gfp_mask);
+			if (!write_bio) {
+				cio->io_err = -ENOMEM;
+				goto err_write_bio;
+			}
+
+			ctx->cio = cio;
+			ctx->range_idx = ri;
+			ctx->write_bio = write_bio;
+			atomic_set(&ctx->refcount, 1);
+
+			if (bdev_is_zoned(dst_bdev)) {
+				INIT_WORK(&ctx->dispatch_work,
+					blk_zoned_copy_dispatch_work_fn);
+				INIT_LIST_HEAD(&ctx->list);
+				spin_lock_irqsave(&cio->list_lock, flags);
+				ctx->status = REQ_COPY_READ_PROGRESS;
+				list_add_tail(&ctx->list, &cio->list);
+				spin_unlock_irqrestore(&cio->list_lock, flags);
+			} else
+				INIT_WORK(&ctx->dispatch_work,
+					blk_copy_dispatch_work_fn);
+
+			__bio_add_page(read_bio, token, PAGE_SIZE, 0);
+			read_bio->bi_iter.bi_size = copy_len;
+			read_bio->bi_iter.bi_sector = src_blk >> SECTOR_SHIFT;
+			read_bio->bi_end_io = blk_copy_offload_read_end_io;
+			read_bio->bi_private = ctx;
+
+			__bio_add_page(write_bio, token, PAGE_SIZE, 0);
+			write_bio->bi_iter.bi_size = copy_len;
+			write_bio->bi_end_io = blk_copy_offload_write_end_io;
+			write_bio->bi_iter.bi_sector = dst_blk >> SECTOR_SHIFT;
+			write_bio->bi_private = ctx;
+
+			atomic_inc(&cio->refcount);
+			submit_bio(read_bio);
+			src_blk += copy_len;
+			dst_blk += copy_len;
+		}
+	}
+
+	/* Wait for completion of all IO's*/
+	return cio_await_completion(cio);
+
+err_write_bio:
+	bio_put(read_bio);
+err_read_bio:
+	kfree(ctx);
+err_ctx:
+	__free_page(token);
+err_token:
+	ranges[ri].comp_len = min_t(sector_t,
+			ranges[ri].comp_len, (ranges[ri].len - rem));
+
+	cio->io_err = ret;
+	return cio_await_completion(cio);
+}
+
+static inline int blk_copy_sanity_check(struct block_device *src_bdev,
+	struct block_device *dst_bdev, struct range_entry *ranges, int nr)
+{
+	unsigned int align_mask = max(bdev_logical_block_size(dst_bdev),
+					bdev_logical_block_size(src_bdev)) - 1;
+	sector_t len = 0;
+	int i;
+
+	if (!nr)
+		return -EINVAL;
+
+	if (nr >= MAX_COPY_NR_RANGE)
+		return -EINVAL;
+
+	if (bdev_read_only(dst_bdev))
+		return -EPERM;
+
+	for (i = 0; i < nr; i++) {
+		if (!ranges[i].len)
+			return -EINVAL;
+
+		len += ranges[i].len;
+		if ((ranges[i].dst & align_mask) ||
+				(ranges[i].src & align_mask) ||
+				(ranges[i].len & align_mask))
+			return -EINVAL;
+		ranges[i].comp_len = 0;
+	}
+
+	if (len && len >= MAX_COPY_TOTAL_LENGTH)
+		return -EINVAL;
+
+	return 0;
+}
+
+static inline bool blk_check_copy_offload(struct request_queue *src_q,
+		struct request_queue *dst_q)
+{
+	return blk_queue_copy(dst_q) && blk_queue_copy(src_q);
+}
+
+/*
+ * blkdev_issue_copy - queue a copy
+ * @src_bdev:	source block device
+ * @dst_bdev:	destination block device
+ * @ranges:	array of source/dest/len,
+ *		ranges are expected to be allocated/freed by caller
+ * @nr:		number of source ranges to copy
+ * @end_io:	end_io function to be called on completion of copy operation,
+ *		for synchronous operation this should be NULL
+ * @private:	end_io function will be called with this private data, should be
+ *		NULL, if operation is synchronous in nature
+ * @gfp_mask:   memory allocation flags (for bio_alloc)
+ *
+ * Description:
+ *	Copy source ranges from source block device to destination block
+ *	device. length of a source range cannot be zero. Max total length of
+ *	copy is limited to MAX_COPY_TOTAL_LENGTH and also maximum number of
+ *	entries is limited to MAX_COPY_NR_RANGE
+ */
+int blkdev_issue_copy(struct block_device *src_bdev,
+	struct block_device *dst_bdev, struct range_entry *ranges, int nr,
+	cio_iodone_t end_io, void *private, gfp_t gfp_mask)
+{
+	struct request_queue *src_q = bdev_get_queue(src_bdev);
+	struct request_queue *dst_q = bdev_get_queue(dst_bdev);
+	int ret = -EINVAL;
+
+	ret = blk_copy_sanity_check(src_bdev, dst_bdev, ranges, nr);
+	if (ret)
+		return ret;
+
+	if (blk_check_copy_offload(src_q, dst_q))
+		ret = blk_copy_offload(src_bdev, dst_bdev, ranges, nr,
+				end_io, private, gfp_mask);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(blkdev_issue_copy);
+
 static int __blkdev_issue_write_zeroes(struct block_device *bdev,
 		sector_t sector, sector_t nr_sects, gfp_t gfp_mask,
 		struct bio **biop, unsigned flags)

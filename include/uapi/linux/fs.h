@@ -67,6 +67,21 @@ struct fstrim_range {
 /* maximum total copy length */
 #define MAX_COPY_TOTAL_LENGTH	(1 << 27)
 
+/* Maximum no of entries supported */
+#define MAX_COPY_NR_RANGE	(1 << 12)
+
+/* range entry for copy offload, all fields should be byte addressed */
+struct range_entry {
+	__u64 src;		/* source to be copied */
+	__u64 dst;		/* destination */
+	__u64 len;		/* length in bytes to be copied */
+
+	/* length of data copy actually completed. This will be filled by
+	 * kernel, once copy completes
+	 */
+	__u64 comp_len;
+};
+
 /* extent-same (dedupe) ioctls; these MUST match the btrfs ioctl definitions */
 #define FILE_DEDUPE_RANGE_SAME		0
 #define FILE_DEDUPE_RANGE_DIFFERS	1
