@@ -391,6 +391,8 @@ struct nvmet_req {
 	struct device		*p2p_client;
 	u16			error_loc;
 	u64			error_slba;
+	struct range_entry *ranges;
+	unsigned int nr_range;
 };
 
 extern struct workqueue_struct *buffered_io_wq;
