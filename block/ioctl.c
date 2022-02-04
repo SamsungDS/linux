@@ -120,6 +120,40 @@ fail:
 	return err;
 }
 
+static int blk_ioctl_copy(struct block_device *bdev, fmode_t mode,
+		unsigned long arg)
+{
+	struct copy_range ucopy_range, *kcopy_range = NULL;
+	size_t payload_size = 0;
+	int ret;
+
+	if (!(mode & FMODE_WRITE))
+		return -EBADF;
+
+	if (copy_from_user(&ucopy_range, (void __user *)arg,
+				sizeof(ucopy_range)))
+		return -EFAULT;
+
+	if (unlikely(!ucopy_range.nr_range || ucopy_range.reserved ||
+				ucopy_range.nr_range >= MAX_COPY_NR_RANGE))
+		return -EINVAL;
+
+	payload_size = (ucopy_range.nr_range * sizeof(struct range_entry)) +
+				sizeof(ucopy_range);
+
+	kcopy_range = memdup_user((void __user *)arg, payload_size);
+	if (IS_ERR(kcopy_range))
+		return PTR_ERR(kcopy_range);
+
+	ret = blkdev_issue_copy(bdev, bdev, kcopy_range->ranges,
+			kcopy_range->nr_range, NULL, NULL, GFP_KERNEL);
+	if (copy_to_user((void __user *)arg, kcopy_range, payload_size))
+		ret = -EFAULT;
+
+	kfree(kcopy_range);
+	return ret;
+}
+
 static int blk_ioctl_secure_erase(struct block_device *bdev, fmode_t mode,
 		void __user *argp)
 {
@@ -481,6 +515,8 @@ static int blkdev_common_ioctl(struct block_device *bdev, fmode_t mode,
 		return blk_ioctl_discard(bdev, mode, arg);
 	case BLKSECDISCARD:
 		return blk_ioctl_secure_erase(bdev, mode, argp);
+	case BLKCOPY:
+		return blk_ioctl_copy(bdev, mode, arg);
 	case BLKZEROOUT:
 		return blk_ioctl_zeroout(bdev, mode, arg);
 	case BLKGETDISKSEQ:
