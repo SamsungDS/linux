@@ -1234,6 +1234,183 @@ static int zonefs_file_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+static int zonefs_is_file_copy_offset_ok(struct inode *src_inode,
+		struct inode *dst_inode, loff_t src_off, loff_t dst_off,
+		size_t *len)
+{
+	loff_t size, endoff;
+	struct zonefs_inode_info *dst_zi = ZONEFS_I(dst_inode);
+
+	inode_lock(src_inode);
+	size = i_size_read(src_inode);
+	inode_unlock(src_inode);
+	/* Don't copy beyond source file EOF. */
+	if (src_off < size) {
+		if (src_off + *len > size)
+			*len = (size - (src_off + *len));
+	} else
+		*len = 0;
+
+	mutex_lock(&dst_zi->i_truncate_mutex);
+	if (dst_zi->i_ztype == ZONEFS_ZTYPE_SEQ) {
+		if (*len > dst_zi->i_max_size - dst_zi->i_wpoffset)
+			*len -= dst_zi->i_max_size - dst_zi->i_wpoffset;
+
+		if (dst_off != dst_zi->i_wpoffset)
+			goto err;
+	}
+	mutex_unlock(&dst_zi->i_truncate_mutex);
+
+	endoff = dst_off + *len;
+	inode_lock(dst_inode);
+	if (endoff > dst_zi->i_max_size ||
+			inode_newsize_ok(dst_inode, endoff)) {
+		inode_unlock(dst_inode);
+		goto err;
+	}
+	inode_unlock(dst_inode);
+
+	return 0;
+err:
+	mutex_unlock(&dst_zi->i_truncate_mutex);
+	return -EINVAL;
+}
+
+static ssize_t zonefs_issue_copy(struct zonefs_inode_info *src_zi,
+		loff_t src_off, struct zonefs_inode_info *dst_zi,
+		loff_t dst_off, size_t len)
+{
+	struct block_device *src_bdev = src_zi->i_vnode.i_sb->s_bdev;
+	struct block_device *dst_bdev = dst_zi->i_vnode.i_sb->s_bdev;
+	struct range_entry *rlist = NULL;
+	int ret = len;
+
+	rlist = kmalloc(sizeof(*rlist), GFP_KERNEL);
+	if (!rlist)
+		return -ENOMEM;
+
+	rlist[0].dst = (dst_zi->i_zsector << SECTOR_SHIFT) + dst_off;
+	rlist[0].src = (src_zi->i_zsector << SECTOR_SHIFT) + src_off;
+	rlist[0].len = len;
+	rlist[0].comp_len = 0;
+	ret = blkdev_issue_copy(src_bdev, dst_bdev, rlist, 1, NULL, NULL,
+			GFP_KERNEL);
+	if (rlist[0].comp_len > 0)
+		ret = rlist[0].comp_len;
+	kfree(rlist);
+
+	return ret;
+}
+
+/* Returns length of possible copy, else returns error */
+static ssize_t zonefs_copy_file_checks(struct file *src_file, loff_t src_off,
+					struct file *dst_file, loff_t dst_off,
+					size_t *len, unsigned int flags)
+{
+	struct inode *src_inode = file_inode(src_file);
+	struct inode *dst_inode = file_inode(dst_file);
+	struct zonefs_inode_info *src_zi = ZONEFS_I(src_inode);
+	struct zonefs_inode_info *dst_zi = ZONEFS_I(dst_inode);
+	ssize_t ret;
+
+	if (src_inode->i_sb != dst_inode->i_sb)
+		return -EXDEV;
+
+	/* Start by sync'ing the source and destination files for conv zones */
+	if (src_zi->i_ztype == ZONEFS_ZTYPE_CNV) {
+		ret = file_write_and_wait_range(src_file, src_off,
+				(src_off + *len));
+		if (ret < 0)
+			goto io_error;
+	}
+	inode_dio_wait(src_inode);
+
+	/* Start by sync'ing the source and destination files ifor conv zones */
+	if (dst_zi->i_ztype == ZONEFS_ZTYPE_CNV) {
+		ret = file_write_and_wait_range(dst_file, dst_off,
+				(dst_off + *len));
+		if (ret < 0)
+			goto io_error;
+	}
+	inode_dio_wait(dst_inode);
+
+	/* Drop dst file cached pages for a conv zone*/
+	if (dst_zi->i_ztype == ZONEFS_ZTYPE_CNV) {
+		ret = invalidate_inode_pages2_range(dst_inode->i_mapping,
+				dst_off >> PAGE_SHIFT,
+				(dst_off + *len) >> PAGE_SHIFT);
+		if (ret < 0)
+			goto io_error;
+	}
+
+	ret = zonefs_is_file_copy_offset_ok(src_inode, dst_inode, src_off,
+			dst_off, len);
+	if (ret < 0)
+		return ret;
+
+	return *len;
+
+io_error:
+	zonefs_io_error(dst_inode, true);
+	return ret;
+}
+
+static ssize_t zonefs_copy_file(struct file *src_file, loff_t src_off,
+		struct file *dst_file, loff_t dst_off,
+		size_t len, unsigned int flags)
+{
+	struct inode *src_inode = file_inode(src_file);
+	struct inode *dst_inode = file_inode(dst_file);
+	struct zonefs_inode_info *src_zi = ZONEFS_I(src_inode);
+	struct zonefs_inode_info *dst_zi = ZONEFS_I(dst_inode);
+	ssize_t ret = 0, bytes;
+
+	inode_lock(src_inode);
+	inode_lock(dst_inode);
+	bytes = zonefs_issue_copy(src_zi, src_off, dst_zi, dst_off, len);
+	if (bytes < 0)
+		goto unlock_exit;
+
+	ret += bytes;
+
+	file_update_time(dst_file);
+	mutex_lock(&dst_zi->i_truncate_mutex);
+	zonefs_update_stats(dst_inode, dst_off + bytes);
+	zonefs_i_size_write(dst_inode, dst_off + bytes);
+	dst_zi->i_wpoffset += bytes;
+	mutex_unlock(&dst_zi->i_truncate_mutex);
+	/* if we still have some bytes left, do splice copy */
+	if (bytes && (bytes < len)) {
+		bytes = do_splice_direct(src_file, &src_off, dst_file,
+					 &dst_off, len, flags);
+		if (bytes > 0)
+			ret += bytes;
+	}
+unlock_exit:
+	if (ret < 0)
+		zonefs_io_error(dst_inode, true);
+	inode_unlock(src_inode);
+	inode_unlock(dst_inode);
+	return ret;
+}
+
+static ssize_t zonefs_copy_file_range(struct file *src_file, loff_t src_off,
+				      struct file *dst_file, loff_t dst_off,
+				      size_t len, unsigned int flags)
+{
+	ssize_t ret = -EIO;
+
+	ret = zonefs_copy_file_checks(src_file, src_off, dst_file, dst_off,
+				     &len, flags);
+	if (ret > 0)
+		ret = zonefs_copy_file(src_file, src_off, dst_file, dst_off,
+				     len, flags);
+	else if (ret < 0 && ret == -EXDEV)
+		ret = generic_copy_file_range(src_file, src_off, dst_file,
+					      dst_off, len, flags);
+	return ret;
+}
+
 static const struct file_operations zonefs_file_operations = {
 	.open		= zonefs_file_open,
 	.release	= zonefs_file_release,
@@ -1245,6 +1422,7 @@ static const struct file_operations zonefs_file_operations = {
 	.splice_read	= generic_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.iopoll		= iocb_bio_iopoll,
+	.copy_file_range = zonefs_copy_file_range,
 };
 
 static struct kmem_cache *zonefs_inode_cachep;
@@ -1815,6 +1993,7 @@ static int zonefs_fill_super(struct super_block *sb, void *data, int silent)
 	atomic_set(&sbi->s_active_seq_files, 0);
 	sbi->s_max_active_seq_files = bdev_max_active_zones(sb->s_bdev);
 
+	/* set copy support by default */
 	ret = zonefs_read_super(sb);
 	if (ret)
 		return ret;
