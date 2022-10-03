@@ -159,5 +159,15 @@ calc_vm_flag_bits(unsigned long flags)
 	       arch_calc_vm_flag_bits(flags);
 }
 
+#ifdef CONFIG_CXLSSD
+static inline unsigned long
+calc_cxl_vm_flag_bits(unsigned long flags)
+{
+	return _calc_vm_trans(flags, MAP_CXLSSD, VM_CXLSSD) |
+	       _calc_vm_trans(flags, MAP_CXLSSD_IMMED_MAP, VM_CXLSSD_IMMED_MAP) |
+	       _calc_vm_trans(flags, MAP_CXLSSD_ADAPTIVE, VM_CXLSSD_ADAPTIVE) |
+	       _calc_vm_trans(flags, MAP_CXLSSD_HUGEPAGE, VM_CXLSSD_HUGEPAGE);
+}
+#endif
 unsigned long vm_commit_limit(void);
 #endif /* _LINUX_MMAN_H */

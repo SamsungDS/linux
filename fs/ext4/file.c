@@ -30,6 +30,9 @@
 #include <linux/uio.h>
 #include <linux/mman.h>
 #include <linux/backing-dev.h>
+#ifdef CONFIG_CXLSSD
+#include <linux/cxlfs.h>
+#endif
 #include "ext4.h"
 #include "ext4_jbd2.h"
 #include "xattr.h"
@@ -761,6 +764,12 @@ static const struct vm_operations_struct ext4_file_vm_ops = {
 	.page_mkwrite   = ext4_page_mkwrite,
 };
 
+#ifdef CONFIG_CXLSSD
+static const struct vm_operations_struct ext4_file_vm_ops_cxl = {
+	.fault		= ext4_filemap_fault_cxl,
+};
+#endif
+
 static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	struct inode *inode = file->f_mapping->host;
@@ -778,6 +787,27 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EOPNOTSUPP;
 
 	file_accessed(file);
+#ifdef CONFIG_CXLSSD
+	if (IS_CXLSSD(vma->vm_flags)) {
+		// not a CXLSSD?
+		if (!sbi->cxlssd_si) {
+			printk("Requested CXLSSD feature on unsupported drive, is device mounted?");
+			return -EOPNOTSUPP;
+		}
+		vma->vm_ops = &ext4_file_vm_ops_cxl;
+		if (file->f_flags & O_DSYNC)
+			vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+		if (IS_CXLSSD_IMMED_MAP(vma->vm_flags)) {
+			return cxl_vma_mapper(file, vma, sbi->cxlssd_si);
+		} else if (IS_CXLSSD_ADAPTIVE(vma->vm_flags)) {
+			WARN_ONCE(1, "This kernel does not support CXLSSD_ADAPTIVE");
+			vma->vm_ops = NULL;
+			// currently we don't support adaptive method
+			return -EOPNOTSUPP;
+		}
+		return 0;
+	}
+#endif
 	if (IS_DAX(file_inode(file))) {
 		vma->vm_ops = &ext4_dax_vm_ops;
 		vma->vm_flags |= VM_HUGEPAGE;

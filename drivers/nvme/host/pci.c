@@ -28,6 +28,11 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
+#ifdef CONFIG_CXLSSD
+#include <linux/cxlfs.h>
+#define PCI_DVSEC_VENDOR_ID_CXL 0x1E98
+#define CXL_DVSEC_PCIE_DEVICE 0x0
+#endif
 
 #include "trace.h"
 #include "nvme.h"
@@ -46,6 +51,18 @@
 
 static int use_threaded_interrupts;
 module_param(use_threaded_interrupts, int, 0444);
+
+#ifdef CONFIG_CXLSSD
+
+static bool use_cxl = true;
+module_param(use_cxl, bool, 0444);
+MODULE_PARM_DESC(use_cxl, "use CXL");
+
+static bool ignore_host_queue = false;
+module_param(ignore_host_queue, bool, 0444);
+MODULE_PARM_DESC(ignore_host_queue, "CXL driver will try to handle buggy device by not creating host IO queue");
+
+#endif
 
 static bool use_cmb_sqes = true;
 module_param(use_cmb_sqes, bool, 0444);
@@ -73,6 +90,33 @@ static const struct kernel_param_ops io_queue_depth_ops = {
 static unsigned int io_queue_depth = 1024;
 module_param_cb(io_queue_depth, &io_queue_depth_ops, &io_queue_depth, 0644);
 MODULE_PARM_DESC(io_queue_depth, "set io queue depth, should >= 2 and < 4096");
+
+#ifdef CONFIG_CXLSSD
+//
+// according to CXL Spec Rev 2.0 we should look at DVSEC to determine the
+// device is cxl capable and get the offset/size of HDM from DVSEC (offset 18H)
+// This function does mostly the same as cxl_mem_dvsec
+int find_cxl_capability(struct pci_dev *pdev, int dvsec) {
+	int pos;
+
+	pos = pci_find_ext_capability(pdev, PCI_EXT_CAP_ID_DVSEC);
+	if (!pos)
+		return 0;
+
+	while (pos) {
+		u16 vendor, id;
+
+		pci_read_config_word(pdev, pos + PCI_DVSEC_HEADER1, &vendor);
+		pci_read_config_word(pdev, pos + PCI_DVSEC_HEADER2, &id);
+		if (vendor == PCI_DVSEC_VENDOR_ID_CXL && dvsec == id)
+			return pos;
+
+		pos = pci_find_next_ext_capability(pdev, pos,
+						   PCI_EXT_CAP_ID_DVSEC);
+	}
+	return 0;
+}
+#endif
 
 static int io_queue_count_set(const char *val, const struct kernel_param *kp)
 {
@@ -103,6 +147,51 @@ MODULE_PARM_DESC(poll_queues, "Number of queues to use for polled IO.");
 static bool noacpi;
 module_param(noacpi, bool, 0444);
 MODULE_PARM_DESC(noacpi, "disable acpi bios quirks");
+
+#ifdef CONFIG_CXLSSD
+
+/* load PCI path of CXLSSD */
+#define CXLSSD_PCIPATH_LEN 256
+#define MAX_CXLSSD  1
+
+struct cxlssd_pci_path {
+	u8 bus;
+	u16 devfn;
+};
+static struct cxlssd_pci_path cxlssd_pci[MAX_CXLSSD];
+
+static int __init boot_cxlssd_id(char *str)
+{
+	int no_arg;
+	unsigned int bus, dev, fn;
+
+	if(!str) return 1;
+
+	no_arg = sscanf(str, "%x:%x.%x", &bus, &dev, &fn);
+	if (no_arg != 3)
+		return 1;
+
+	printk(KERN_NOTICE "cxlssd_pci %x:%x.%x is specified\n", bus, dev, fn);
+
+	// fill the PCI path
+	cxlssd_pci[0].bus = bus;
+	cxlssd_pci[0].devfn = PCI_DEVFN(dev, fn);
+	return 0;
+}
+
+#ifdef MODULE
+
+static char *cxlssd_pci_path;
+module_param(cxlssd_pci_path, charp, 0444);
+MODULE_PARM_DESC(cxlssd_pci_path, "CXLSSD PCI path");
+
+#else
+
+early_param("cxlssd_pci", boot_cxlssd_id);
+
+#endif
+
+#endif
 
 struct nvme_dev;
 struct nvme_queue;
@@ -135,6 +224,12 @@ struct nvme_dev {
 	bool subsystem;
 	u64 cmb_size;
 	bool cmb_use_sqes;
+#ifdef CONFIG_CXLSSD
+	bool cxlssd;
+	// cache the value from device, valid only if non-zero
+	unsigned long cxlssd_range1_base;
+	unsigned long cxlssd_range1_size;
+#endif
 	u32 cmbsz;
 	u32 cmbloc;
 	struct nvme_ctrl ctrl;
@@ -1127,6 +1222,12 @@ static inline int nvme_poll_cq(struct nvme_queue *nvmeq,
 {
 	int found = 0;
 
+#ifdef CONFIG_CXLSSD
+	struct nvme_dev *dev = nvmeq->dev;
+
+	if ((dev->cxlssd) && (ignore_host_queue) && (nvmeq->qid!=0))
+		return IRQ_HANDLED;
+#endif
 	while (nvme_cqe_pending(nvmeq)) {
 		found++;
 		/*
@@ -1148,6 +1249,12 @@ static irqreturn_t nvme_irq(int irq, void *data)
 	struct nvme_queue *nvmeq = data;
 	DEFINE_IO_COMP_BATCH(iob);
 
+#ifdef CONFIG_CXLSSD
+	struct nvme_dev *dev = nvmeq->dev;
+	if ((dev->cxlssd) && (ignore_host_queue) && (nvmeq->qid!=0))
+		return IRQ_HANDLED;
+#endif
+
 	if (nvme_poll_cq(nvmeq, &iob)) {
 		if (!rq_list_empty(iob.req_list))
 			nvme_pci_complete_batch(&iob);
@@ -1160,6 +1267,10 @@ static irqreturn_t nvme_irq_check(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
 
+#ifdef CONFIG_CXLSSD
+	if ((nvmeq->dev->cxlssd) && (ignore_host_queue) && (nvmeq->qid!=0))
+		return IRQ_NONE;
+#endif
 	if (nvme_cqe_pending(nvmeq))
 		return IRQ_WAKE_THREAD;
 	return IRQ_NONE;
@@ -1893,6 +2004,7 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 			break;
 	}
 
+exit:
 	/*
 	 * Ignore failing Create SQ/CQ commands, we can continue with less
 	 * than the desired amount of queues, and even a controller without
@@ -3065,6 +3177,56 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!dev)
 		return -ENOMEM;
 
+#ifdef CONFIG_CXLSSD
+	/*
+	 * detect CXL SSD
+	 */
+	if (use_cxl) {
+		// auto detection first -- here we only use HDM Range 1 for CXLSSD PoC
+		int pos = find_cxl_capability(pdev, CXL_DVSEC_PCIE_DEVICE);
+		if (pos) {
+			uint64_t range1_size, range1_base;
+			// CXLSSD PoC only has one HDM range, we don't bother with the 2nd range
+			//uint64_t range2_size, range2_base;
+			uint32_t temp1, temp2;
+			pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_1_SIZE_HI, &temp1);
+			pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_1_SIZE_LO, &temp2);
+			range1_size = ((uint64_t)temp1<<32) | (temp2 & 0xF0000000);
+			pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_1_BASE_HI, &temp1);
+			pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_1_BASE_LO, &temp2);
+			range1_base = ((uint64_t)temp1<<32) | temp2;
+
+			// pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_2_SIZE_HI, &temp1);
+			// pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_2_SIZE_LO, &temp2);
+			// range2_size = (temp1<<32) | (temp2 & 0xF0000000);
+			// pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_2_BASE_HI, &temp1);
+			// pci_read_config_dword(pdev, pos + PCI_DVSEC_RANGE_2_BASE_LO, &temp2);
+			// range2_base = (temp1<<32) | temp2;
+			printk("CXLSSD detected at %x:%x:%x\n", pdev->bus->number, PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+			printk("CXLSSD HDM Range: [0x%llx - 0x%llx]\n",range1_base, range1_base + range1_size -1);
+			register_cxlssd_space_info(range1_base, range1_size, &(pdev->dev));
+			print_cxlssd_space_info();
+			dev->cxlssd_range1_base = range1_base;
+			dev->cxlssd_range1_size = range1_size;
+			dev->cxlssd = true;
+			//FIXME: handle error case
+		} else {
+			//force it if we could not find in DVSEC
+			int i;
+			for (i = 0; i < MAX_CXLSSD; i++) {
+				if (cxlssd_pci[i].bus == pdev->bus->number &&
+						cxlssd_pci[i].devfn == pdev->devfn) {
+					dev_info(&pdev->dev,
+							"CXL SSD %x:%x.%x is enabled manually at \n",
+							pdev->bus->number, PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+					dev->cxlssd = true;
+				}
+			}
+		}
+	}
+
+#endif
+
 	dev->nr_write_queues = write_queues;
 	dev->nr_poll_queues = poll_queues;
 	dev->nr_allocated_queues = nvme_max_io_queues(dev) + 1;
@@ -3120,6 +3282,13 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 			quirks);
 	if (result)
 		goto release_mempool;
+
+#ifdef CONFIG_CXLSSD
+	/* indicate it's CXLSSD controller */
+	if (dev->cxlssd) {
+		set_bit(NVME_CTRL_CXL_SSD, &dev->ctrl.flags);
+	}
+#endif
 
 	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
 
@@ -3223,6 +3392,11 @@ static int nvme_resume(struct device *dev)
 	struct nvme_dev *ndev = pci_get_drvdata(to_pci_dev(dev));
 	struct nvme_ctrl *ctrl = &ndev->ctrl;
 
+#if CONFIG_CXLSSD
+	// ignore those PM requests, PoC device cannot be shutdown when using CXL.mem
+	if (ndev->cxlssd)
+		return 0;
+#endif
 	if (ndev->last_ps == U32_MAX ||
 	    nvme_set_power_state(ctrl, ndev->last_ps) != 0)
 		goto reset;
@@ -3240,6 +3414,11 @@ static int nvme_suspend(struct device *dev)
 	struct nvme_dev *ndev = pci_get_drvdata(pdev);
 	struct nvme_ctrl *ctrl = &ndev->ctrl;
 	int ret = -EBUSY;
+
+#if CONFIG_CXLSSD
+	if (ndev->cxlssd)
+		return -EBUSY;
+#endif
 
 	ndev->last_ps = U32_MAX;
 
@@ -3314,6 +3493,10 @@ static int nvme_simple_suspend(struct device *dev)
 {
 	struct nvme_dev *ndev = pci_get_drvdata(to_pci_dev(dev));
 
+#if CONFIG_CXLSSD
+	if (ndev->cxlssd)
+		return -EBUSY;
+#endif
 	return nvme_disable_prepare_reset(ndev, true);
 }
 
@@ -3322,6 +3505,10 @@ static int nvme_simple_resume(struct device *dev)
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct nvme_dev *ndev = pci_get_drvdata(pdev);
 
+#if CONFIG_CXLSSD
+	if (ndev->cxlssd)
+		return 0;
+#endif
 	return nvme_try_sched_reset(&ndev->ctrl);
 }
 
@@ -3504,6 +3691,12 @@ static int __init nvme_init(void)
 	BUILD_BUG_ON(sizeof(struct nvme_create_sq) != 64);
 	BUILD_BUG_ON(sizeof(struct nvme_delete_queue) != 64);
 	BUILD_BUG_ON(IRQ_AFFINITY_MAX_SETS < 2);
+
+#ifdef CONFIG_CXLSSD
+#ifdef MODULE
+	boot_cxlssd_id(cxlssd_pci_path);
+#endif
+#endif
 
 	return pci_register_driver(&nvme_driver);
 }

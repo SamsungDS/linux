@@ -1476,6 +1476,15 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	 */
 	vm_flags = calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
 			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
+#ifdef CONFIG_CXLSSD
+	/*
+	 * Set CXL flags
+	 * MAP_CXLSSD          => VM_CXLSSD
+	 * MAP_CXLSSD_IMMED_MAP=> VM_CXLSSD_IMMED_MAP
+	 * MAP_CXLSSD_ADAPTIVE =>  VM_CXLSSD_ADAPTIVE
+	 */
+	vm_flags |= calc_cxl_vm_flag_bits(flags);
+#endif
 
 	if (flags & MAP_LOCKED)
 		if (!can_do_mlock())
@@ -3189,6 +3198,7 @@ int insert_vm_struct(struct mm_struct *mm, struct vm_area_struct *vma)
 	vma_link(mm, vma, prev, rb_link, rb_parent);
 	return 0;
 }
+EXPORT_SYMBOL(insert_vm_struct);
 
 /*
  * Copy the vma structure to a new location in the same mm,

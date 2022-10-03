@@ -33,6 +33,12 @@
 #define MAP_UNINITIALIZED 0x4000000	/* For anonymous mmap, memory could be
 					 * uninitialized */
 
+#ifdef CONFIG_CXLSSD
+#define MAP_CXLSSD              0x10000000
+#define MAP_CXLSSD_IMMED_MAP    0x20000000
+#define MAP_CXLSSD_ADAPTIVE     0x40000000
+#define MAP_CXLSSD_HUGEPAGE     0x80000000
+#endif
 /*
  * Flags for mlock
  */

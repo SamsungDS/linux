@@ -117,6 +117,7 @@ int fiemap_fill_next_extent(struct fiemap_extent_info *fieinfo, u64 logical,
 {
 	struct fiemap_extent extent;
 	struct fiemap_extent __user *dest = fieinfo->fi_extents_start;
+	struct fiemap_extent *kdest = fieinfo->fi_extents_kstart;
 
 	/* only count the extents */
 	if (fieinfo->fi_extents_max == 0) {
@@ -140,9 +141,15 @@ int fiemap_fill_next_extent(struct fiemap_extent_info *fieinfo, u64 logical,
 	extent.fe_length = len;
 	extent.fe_flags = flags;
 
-	dest += fieinfo->fi_extents_mapped;
-	if (copy_to_user(dest, &extent, sizeof(extent)))
-		return -EFAULT;
+	if (dest) {
+		dest += fieinfo->fi_extents_mapped;
+		if (copy_to_user(dest, &extent, sizeof(extent)))
+			return -EFAULT;
+	}
+	if (kdest) {
+		kdest += fieinfo->fi_extents_mapped;
+		memcpy(kdest, &extent, sizeof(extent));
+	}
 
 	fieinfo->fi_extents_mapped++;
 	if (fieinfo->fi_extents_mapped == fieinfo->fi_extents_max)
@@ -196,6 +203,37 @@ int fiemap_prep(struct inode *inode, struct fiemap_extent_info *fieinfo,
 }
 EXPORT_SYMBOL(fiemap_prep);
 
+int get_fiemap(struct file *filp, struct fiemap *fiemap)
+{
+	struct fiemap_extent_info fieinfo = { 0, };
+	struct inode *inode = file_inode(filp);
+	int error;
+
+	if (!inode->i_op->fiemap)
+		return -EOPNOTSUPP;
+
+	if (fiemap->fm_extent_count > FIEMAP_MAX_EXTENTS)
+		return -EINVAL;
+
+	fieinfo.fi_flags = fiemap->fm_flags;
+	fieinfo.fi_extents_max = fiemap->fm_extent_count;
+	fieinfo.fi_extents_start = NULL;
+	fieinfo.fi_extents_kstart = fiemap->fm_extents;
+
+	if (fieinfo.fi_flags & FIEMAP_FLAG_SYNC)
+		filemap_write_and_wait(inode->i_mapping);
+
+	error = inode->i_op->fiemap(inode, &fieinfo, fiemap->fm_start, fiemap->fm_length);
+	if (error)
+		return error;
+
+	fiemap->fm_flags = fieinfo.fi_flags;
+	fiemap->fm_mapped_extents = fieinfo.fi_extents_mapped;
+
+	return error;
+}
+EXPORT_SYMBOL(get_fiemap);
+
 static int ioctl_fiemap(struct file *filp, struct fiemap __user *ufiemap)
 {
 	struct fiemap fiemap;
@@ -215,6 +253,7 @@ static int ioctl_fiemap(struct file *filp, struct fiemap __user *ufiemap)
 	fieinfo.fi_flags = fiemap.fm_flags;
 	fieinfo.fi_extents_max = fiemap.fm_extent_count;
 	fieinfo.fi_extents_start = ufiemap->fm_extents;
+	fieinfo.fi_extents_kstart = NULL;
 
 	error = inode->i_op->fiemap(inode, &fieinfo, fiemap.fm_start,
 			fiemap.fm_length);

@@ -109,6 +109,32 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	}
 
 	ret = nvme_execute_passthru_rq(req);
+
+#ifdef CONFIG_CXLSSD
+	if (test_bit(NVME_CTRL_CXL_SSD, &(nvme_req(req)->ctrl->flags)) && ret == NVME_SC_SUCCESS) {
+        // override to alow only LBA format of 512B + no metadata
+		if (cmd->common.opcode == nvme_admin_identify && cmd->identify.cns == NVME_ID_CNS_NS) {
+			struct nvme_id_ns *id = (struct nvme_id_ns *)ubuffer;
+			// one LBA format is available
+			if (bufflen >= offsetof(struct nvme_id_ns, flbas))
+				put_user (0, &id->nlbaf);
+			// No metadata transfer is supported
+			if (bufflen >= offsetof(struct nvme_id_ns, dpc))
+				put_user (0, &id->mc);
+
+			// 512B and no metadata format is available
+			if (bufflen >= offsetof(struct nvme_id_ns, lbaf) + sizeof(struct nvme_lbaf)) {
+				put_user (0, &id->lbaf[0].ms);
+				put_user (9, &id->lbaf[0].ds);
+				put_user (1, &id->lbaf[0].rp);
+			}
+
+			dev_info(NULL, "%s: overrode LBA format of nsid (%u)\n",
+					current->comm, le32_to_cpu(cmd->identify.nsid));
+		}
+	}
+#endif
+
 	if (result)
 		*result = le64_to_cpu(nvme_req(req)->result.u64);
 	if (meta && !ret && !write) {

@@ -45,6 +45,9 @@
 #include <linux/fsverity.h>
 
 #include <linux/compiler.h>
+#ifdef CONFIG_CXLSSD
+#include <linux/cxlfs.h>
+#endif
 
 /*
  * The fourth extended filesystem constants/structures
@@ -1702,6 +1705,10 @@ struct ext4_sb_info {
 	struct percpu_rw_semaphore s_writepages_rwsem;
 	struct dax_device *s_daxdev;
 	u64 s_dax_part_off;
+#ifdef CONFIG_CXLSSD
+	cxlssd_space_info *cxlssd_si;
+#endif
+
 #ifdef CONFIG_EXT4_DEBUG
 	unsigned long s_simulate_fail;
 #endif
@@ -3045,6 +3052,9 @@ extern int ext4_chunk_trans_blocks(struct inode *, int nrblocks);
 extern int ext4_zero_partial_blocks(handle_t *handle, struct inode *inode,
 			     loff_t lstart, loff_t lend);
 extern vm_fault_t ext4_page_mkwrite(struct vm_fault *vmf);
+#ifdef CONFIG_CXLSSD
+extern vm_fault_t ext4_filemap_fault_cxl(struct vm_fault *vmf);
+#endif
 extern qsize_t *ext4_get_reserved_space(struct inode *inode);
 extern int ext4_get_projid(struct inode *inode, kprojid_t *projid);
 extern void ext4_da_release_space(struct inode *inode, int to_free);

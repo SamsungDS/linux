@@ -100,6 +100,9 @@
 #include <linux/init_syscalls.h>
 #include <linux/stackdepot.h>
 #include <net/net_namespace.h>
+#ifdef CONFIG_CXLSSD
+#include <linux/cxlfs.h>
+#endif
 
 #include <asm/io.h>
 #include <asm/bugs.h>
@@ -984,6 +987,10 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	sort_main_extable();
 	trap_init();
 	mm_init();
+
+#if defined(CONFIG_CXLSSD)
+	init_cxlssd_space_info();
+#endif
 
 	ftrace_init();
 

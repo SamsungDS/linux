@@ -2382,6 +2382,64 @@ static inline int remap_p4d_range(struct mm_struct *mm, pgd_t *pgd,
 	return 0;
 }
 
+// create huge page mapping for one PMD
+int remap_pfn_single_pmd_hugepage(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long pfn, unsigned long size, pgprot_t prot)
+{
+	int ret;
+	pgd_t *pgd;
+	p4d_t *p4d;
+	pud_t *pud;
+	pmd_t *pmd;
+
+	pmd_t entry;
+
+	unsigned long end = addr + PAGE_ALIGN(size);
+	struct mm_struct *mm = vma->vm_mm;
+
+	if (WARN_ON_ONCE(!IS_ALIGNED(addr, PMD_SIZE)))
+		return -EINVAL;
+
+	if (is_cow_mapping(vma->vm_flags)) {
+		if (addr != vma->vm_start || end != vma->vm_end)
+			return -EINVAL;
+		vma->vm_pgoff = pfn;
+	}
+
+	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+
+	BUG_ON(addr >= end);
+
+	pgd = pgd_offset(mm, addr);
+	p4d = p4d_alloc(mm, pgd, addr);
+	if (!p4d) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	pud = pud_alloc(mm, p4d, addr);
+	if (!pud) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	pmd = pmd_alloc(mm, pud, addr);
+	if (!pmd) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	// need to adjust prot since 4k entry format is different from large page
+	prot = pgprot_4k_2_large(prot);
+	entry = pmd_mkhuge(pfn_pmd(pfn, prot));
+	// since this is used by CXLSSD and we know it is device map
+	entry = pmd_mkdevmap(entry);
+
+	set_pmd_at(mm, addr, pmd, entry);
+	update_mmu_cache_pmd(vma, addr, pmd);
+
+out:
+	return 0;
+}
+
 /*
  * Variant of remap_pfn_range that does not call track_pfn_remap.  The caller
  * must have pre-validated the caching bits of the pgprot_t.
@@ -4847,6 +4905,20 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 					    flags & FAULT_FLAG_INSTRUCTION,
 					    flags & FAULT_FLAG_REMOTE))
 		return VM_FAULT_SIGSEGV;
+
+#ifdef CONFIG_CXLSSD
+#ifndef CONFIG_CXLSSD_ENABLE_WRITE
+	/* if this is CXL SSD and write fault, */
+	/* produce process crash with SIGBUS */
+	if (vma->vm_flags & VM_CXLSSD) {
+		if (flags & FAULT_FLAG_WRITE) {
+			printk("Detected write to CXLSSD! %s:%d\n",__FILE__,__LINE__);
+			printk("Check CONFIG_CXLSSD_ENABLE_WRITE if you want to enable write to CXLSSD %s:%d\n",__FILE__,__LINE__);
+			return VM_FAULT_SIGSEGV;
+		}
+	}
+#endif
+#endif
 
 	/*
 	 * Enable the memcg OOM handling for faults triggered in user

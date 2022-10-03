@@ -6189,3 +6189,18 @@ out_error:
 	ext4_journal_stop(handle);
 	goto out;
 }
+
+#ifdef CONFIG_CXLSSD
+vm_fault_t ext4_filemap_fault_cxl(struct vm_fault *vmf)
+{
+	struct inode *inode = file_inode(vmf->vma->vm_file);
+	struct ext4_sb_info *sbi = EXT4_SB(inode->i_sb);
+	vm_fault_t ret;
+
+	filemap_invalidate_lock(inode->i_mapping);
+	ret = cxl_filemap_fault(vmf, sbi->cxlssd_si);
+	filemap_invalidate_unlock(inode->i_mapping);
+
+	return ret;
+}
+#endif

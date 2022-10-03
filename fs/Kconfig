@@ -91,6 +91,45 @@ config FS_DAX_PMD
 config FS_DAX_LIMITED
 	bool
 
+config CXLSSD
+	bool "CXL(Compute Express Link) SSD support"
+	depends on MMU
+	depends on !(ARM || MIPS || SPARC)
+	select TRANSPARENT_HUGEPAGE
+	default y
+	help
+      CXL SSD supports block I/O through block interface over NVMe
+      (CXL.io) and memory operation through MMU over CXL.mem. If
+      this option is enabled, the file systems that support CXL SSD
+      can perform I/O using both block I/O and memory operation. In
+      order to use memory operation to read/write a file the
+      application should create mapping using mmap() with VM_CXL_SSD
+      option.
+
+config CXLSSD_LOG
+	bool "Support CXLSSD Log message for Debugging"
+	depends on CXLSSD
+	default n
+	help
+        Print message in kernel log for CXLSSD
+
+config CXLSSD_MAX_COUNT
+	int "The maximum CXLSSD count "
+	depends on CXLSSD
+	default 8
+	help
+        Maximum number of CXLSSD count (defualt 8)
+
+config CXLSSD_ENABLE_WRITE
+	bool "Enable write to CXLSSD through CXL.mem"
+	depends on CXLSSD
+	default n
+	help
+	CXL SSD does not support write through CXL.mem. Kernel will catch write
+	through CXL.mem and signal user application. If unsure, say N.
+
+
+
 # Posix ACL utility routines
 #
 # Note: Posix ACLs can be implemented without these helpers.  Never use

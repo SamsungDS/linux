@@ -1091,6 +1091,15 @@
 #define  PCI_DVSEC_HEADER1_LEN(x)	(((x) >> 20) & 0xfff)
 #define PCI_DVSEC_HEADER2		0x8 /* Designated Vendor-Specific Header2 */
 #define  PCI_DVSEC_HEADER2_ID(x)		((x) & 0xffff)
+/* CXL DVSEC HDM SIZE and RANGE Information */
+#define PCI_DVSEC_RANGE_1_SIZE_HI	0x18 /* Range 1 Size High */
+#define PCI_DVSEC_RANGE_1_SIZE_LO	0x1c /* Range 1 Size Low */
+#define PCI_DVSEC_RANGE_1_BASE_HI	0x20 /* Range 1 Size High */
+#define PCI_DVSEC_RANGE_1_BASE_LO	0x24 /* Range 1 Size Low */
+#define PCI_DVSEC_RANGE_2_SIZE_HI	0x28 /* Range 2 Size High */
+#define PCI_DVSEC_RANGE_2_SIZE_LO	0x2c /* Range 2 Size Low */
+#define PCI_DVSEC_RANGE_2_BASE_HI	0x30 /* Range 2 Size High */
+#define PCI_DVSEC_RANGE_2_BASE_LO	0x34 /* Range 2 Size Low */
 
 /* Data Link Feature */
 #define PCI_DLF_CAP		0x04	/* Capabilities Register */

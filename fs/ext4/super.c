@@ -49,6 +49,10 @@
 #include <linux/fs_context.h>
 #include <linux/fs_parser.h>
 
+#ifdef CONFIG_CXLSSD
+#include <linux/cxlfs.h>
+#endif
+
 #include "ext4.h"
 #include "ext4_extents.h"	/* Needed for trace points definition */
 #include "ext4_jbd2.h"
@@ -4407,6 +4411,9 @@ static int __ext4_fill_super(struct fs_context *fc, struct super_block *sb)
 	ext4_group_t first_not_zeroed;
 	struct ext4_fs_context *ctx = fc->fs_private;
 	int silent = fc->sb_flags & SB_SILENT;
+#ifdef CONFIG_CXLSSD
+	unsigned long long cxl_offset;
+#endif
 
 	/* Set defaults for the variables that will be set during parsing */
 	ctx->journal_ioprio = DEFAULT_JOURNAL_IOPRIO;
@@ -4445,6 +4452,18 @@ static int __ext4_fill_super(struct fs_context *fc, struct super_block *sb)
 	 *       some ext4 macro-instructions depend on its value
 	 */
 	es = (struct ext4_super_block *) (bh->b_data + offset);
+#ifdef CONFIG_CXLSSD
+	if ((sb->s_bdev->bd_disk) &&
+			(sb->s_bdev->bd_disk->bdi) &&
+			(sb->s_bdev->bd_disk->bdi->owner) &&
+			(sb->s_bdev->bd_disk->bdi->owner->parent) &&
+			(sb->s_bdev->bd_disk->bdi->owner->parent->parent)) {
+		cxl_offset = (sb->s_bdev->bd_start_sect*SECTOR_SIZE) + (logical_sb_block*blocksize);
+		printk("[CXLSSD: %d in %s] EXT4 Super Block block number : %lld(Start addr : %lld(SB addr : %lld) || blocksize : %d || offset : %ld) \n", __LINE__, __func__, logical_sb_block, sb->s_bdev->bd_start_sect*SECTOR_SIZE, cxl_offset, blocksize, offset);
+		printk("[CXLSSD: %d in %s]sizeof(struct page) : %ld\n", __LINE__, __func__, sizeof(struct page));
+		sbi->cxlssd_si = get_cxlssd_space_info(es, sizeof(struct ext4_super_block), cxl_offset, sb->s_bdev->bd_disk->bdi->owner->parent->parent);
+	}
+#endif
 	sbi->s_es = es;
 	sb->s_magic = le16_to_cpu(es->s_magic);
 	if (sb->s_magic != EXT4_SUPER_MAGIC)

@@ -421,6 +421,26 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_FLAGS_CLEAR	(ARCH_VM_PKEY_FLAGS | VM_ARCH_CLEAR)
 
 /*
+ * VMA flags for CXL SSD
+ */
+#if defined(CONFIG_ARCH_USES_HIGH_VMA_FLAGS) && defined(CONFIG_CXLSSD)
+#define VM_CXLSSD_BIT	        40	/* bit only usable on 64-bit architectures */
+#define VM_CXLSSD_IMMED_MAP_BIT 41
+#define VM_CXLSSD_ADAPTIVE_BIT 42
+#define VM_CXLSSD_HUGEPAGE_BIT 43
+
+#define VM_CXLSSD               BIT(VM_CXLSSD_BIT)
+#define VM_CXLSSD_IMMED_MAP     BIT(VM_CXLSSD_IMMED_MAP_BIT)
+#define VM_CXLSSD_ADAPTIVE      BIT(VM_CXLSSD_ADAPTIVE_BIT)
+#define VM_CXLSSD_HUGEPAGE      BIT(VM_CXLSSD_HUGEPAGE_BIT)
+
+#define IS_CXLSSD(flags)		(flags & VM_CXLSSD)
+#define IS_CXLSSD_IMMED_MAP(flags)		(flags & VM_CXLSSD_IMMED_MAP)
+#define IS_CXLSSD_ADAPTIVE(flags)		(flags & VM_CXLSSD_ADAPTIVE)
+#define IS_CXLSSD_HUGEPAGE(flags)		(flags & VM_CXLSSD_HUGEPAGE)
+#endif
+
+/*
  * mapping from the currently active vm_flags protection bits (the
  * low four bits) to a page protection mask..
  */
@@ -2865,6 +2885,8 @@ struct vm_area_struct *find_extend_vma(struct mm_struct *, unsigned long addr);
 int remap_pfn_range(struct vm_area_struct *, unsigned long addr,
 			unsigned long pfn, unsigned long size, pgprot_t);
 int remap_pfn_range_notrack(struct vm_area_struct *vma, unsigned long addr,
+		unsigned long pfn, unsigned long size, pgprot_t prot);
+int remap_pfn_single_pmd_hugepage(struct vm_area_struct *vma, unsigned long addr,
 		unsigned long pfn, unsigned long size, pgprot_t prot);
 int vm_insert_page(struct vm_area_struct *, unsigned long addr, struct page *);
 int vm_insert_pages(struct vm_area_struct *vma, unsigned long addr,
