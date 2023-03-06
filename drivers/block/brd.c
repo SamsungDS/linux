@@ -48,6 +48,8 @@ struct brd_device {
 	u64			brd_nr_folios;
 	unsigned int		brd_sector_shift;
 	unsigned int		brd_sector_size;
+	unsigned int		brd_logical_sector_shift;
+	unsigned int		brd_logical_sector_size;
 };
 
 /*
@@ -57,7 +59,7 @@ static struct folio *brd_lookup_folio(struct brd_device *brd, sector_t sector)
 {
 	pgoff_t idx;
 	struct folio *folio;
-	unsigned int rd_sector_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sector_shift = brd->brd_sector_shift - brd->brd_logical_sector_shift;
 
 	/*
 	 * The folio lifetime is protected by the fact that we have opened the
@@ -87,7 +89,7 @@ static int brd_insert_folio(struct brd_device *brd, sector_t sector, gfp_t gfp)
 {
 	pgoff_t idx;
 	struct folio *folio;
-	unsigned int rd_sector_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sector_shift = brd->brd_sector_shift - brd->brd_logical_sector_shift;
 	unsigned int rd_sector_order = get_order(brd->brd_sector_size);
 	int ret = 0;
 
@@ -172,10 +174,10 @@ static void brd_free_folios(struct brd_device *brd)
 static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n,
 			     gfp_t gfp)
 {
-	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - brd->brd_logical_sector_shift;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
 	unsigned int rd_sector_size = brd->brd_sector_size;
-	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
+	unsigned int offset = (sector & (rd_sectors - 1)) << brd->brd_logical_sector_shift;
 	size_t copy;
 	int ret;
 
@@ -184,7 +186,7 @@ static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n,
 	if (ret)
 		return ret;
 	if (copy < n) {
-		sector += copy >> SECTOR_SHIFT;
+		sector += copy >> brd->brd_logical_sector_shift;
 		ret = brd_insert_folio(brd, sector, gfp);
 	}
 	return ret;
@@ -198,10 +200,10 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 {
 	struct folio *folio;
 	void *dst;
-	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - brd->brd_logical_sector_shift;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
 	unsigned int rd_sector_size = brd->brd_sector_size;
-	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
+	unsigned int offset = (sector & (rd_sectors - 1)) << brd->brd_logical_sector_shift;
 	size_t copy;
 
 	copy = min_t(size_t, n, rd_sector_size - offset);
@@ -214,7 +216,7 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 
 	if (copy < n) {
 		src += copy;
-		sector += copy >> SECTOR_SHIFT;
+		sector += copy >> brd->brd_logical_sector_shift;
 		copy = n - copy;
 		folio = brd_lookup_folio(brd, sector);
 		BUG_ON(!folio);
@@ -233,10 +235,10 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 {
 	struct folio *folio;
 	void *src;
-	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - brd->brd_logical_sector_shift;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
 	unsigned int rd_sector_size = brd->brd_sector_size;
-	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
+	unsigned int offset = (sector & (rd_sectors - 1)) << brd->brd_logical_sector_shift;
 	size_t copy;
 
 	copy = min_t(size_t, n, rd_sector_size - offset);
@@ -250,7 +252,7 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 
 	if (copy < n) {
 		dst += copy;
-		sector += copy >> SECTOR_SHIFT;
+		sector += copy >> brd->brd_logical_sector_shift;
 		copy = n - copy;
 		folio = brd_lookup_folio(brd, sector);
 		if (folio) {
@@ -309,8 +311,8 @@ static void brd_submit_bio(struct bio *bio)
 		int err;
 
 		/* Don't support un-aligned buffer */
-		WARN_ON_ONCE((iter.offset & (SECTOR_SIZE - 1)) ||
-				(len & (SECTOR_SIZE - 1)));
+		WARN_ON_ONCE((iter.offset & (brd->brd_logical_sector_size - 1)) ||
+				(len & (brd->brd_logical_sector_size - 1)));
 
 		err = brd_do_folio(brd, iter.folio, len, iter.offset,
 				   bio->bi_opf, sector);
@@ -322,7 +324,7 @@ static void brd_submit_bio(struct bio *bio)
 			bio_io_error(bio);
 			return;
 		}
-		sector += len >> SECTOR_SHIFT;
+		sector += len >> brd->brd_logical_sector_shift;
 	}
 
 	bio_endio(bio);
@@ -352,6 +354,10 @@ MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 static unsigned int rd_blksize = PAGE_SIZE;
 module_param(rd_blksize, uint, 0444);
 MODULE_PARM_DESC(rd_blksize, "Blocksize of each RAM disk in bytes.");
+
+static unsigned int rd_logical_blksize = SECTOR_SIZE;
+module_param(rd_logical_blksize, uint, 0444);
+MODULE_PARM_DESC(rd_logical_blksize, "Logical blocksize of each RAM disk in bytes.");
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_BLOCKDEV_MAJOR(RAMDISK_MAJOR);
@@ -391,6 +397,8 @@ static int brd_alloc(int i)
 	list_add_tail(&brd->brd_list, &brd_devices);
 	brd->brd_sector_shift = ilog2(rd_blksize);
 	brd->brd_sector_size = rd_blksize;
+	brd->brd_logical_sector_shift = ilog2(rd_logical_blksize);
+	brd->brd_logical_sector_size = rd_logical_blksize;
 
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_folios, GFP_ATOMIC);
@@ -418,6 +426,7 @@ static int brd_alloc(int i)
 		goto out_cleanup_disk;
 	}
 	blk_queue_physical_block_size(disk->queue, rd_blksize);
+	blk_queue_logical_block_size(disk->queue, rd_logical_blksize);
 	blk_queue_max_hw_sectors(disk->queue, RD_MAX_SECTOR_SIZE);
 
 	/* Tell the block layer that this is not a rotational device */
