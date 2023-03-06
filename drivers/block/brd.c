@@ -348,6 +348,7 @@ static int max_part = 1;
 module_param(max_part, int, 0444);
 MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
+#define RD_MAX_SECTOR_SIZE 65536
 static unsigned int rd_blksize = PAGE_SIZE;
 module_param(rd_blksize, uint, 0444);
 MODULE_PARM_DESC(rd_blksize, "Blocksize of each RAM disk in bytes.");
@@ -410,15 +411,14 @@ static int brd_alloc(int i)
 	disk->private_data	= brd;
 	strscpy(disk->disk_name, buf, DISK_NAME_LEN);
 	set_capacity(disk, rd_size * 2);
-	
-	/*
-	 * This is so fdisk will align partitions on 4k, because of
-	 * direct_access API needing 4k alignment, returning a PFN
-	 * (This is only a problem on very small devices <= 4M,
-	 *  otherwise fdisk will align on 1M. Regardless this call
-	 *  is harmless)
-	 */
+
+	if (rd_blksize > RD_MAX_SECTOR_SIZE) {
+		/* Arbitrary limit maximum block size to 32M */
+		err = -EINVAL;
+		goto out_cleanup_disk;
+	}
 	blk_queue_physical_block_size(disk->queue, rd_blksize);
+	blk_queue_max_hw_sectors(disk->queue, RD_MAX_SECTOR_SIZE);
 
 	/* Tell the block layer that this is not a rotational device */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
