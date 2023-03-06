@@ -55,6 +55,7 @@ static struct folio *brd_lookup_folio(struct brd_device *brd, sector_t sector)
 {
 	pgoff_t idx;
 	struct folio *folio;
+	unsigned int rd_sector_shift = PAGE_SHIFT - SECTOR_SHIFT;
 
 	/*
 	 * The folio lifetime is protected by the fact that we have opened the
@@ -68,7 +69,7 @@ static struct folio *brd_lookup_folio(struct brd_device *brd, sector_t sector)
 	 * here, only deletes).
 	 */
 	rcu_read_lock();
-	idx = sector >> PAGE_SECTORS_SHIFT; /* sector to folio index */
+	idx = sector >> rd_sector_shift; /* sector to folio index */
 	folio = radix_tree_lookup(&brd->brd_folios, idx);
 	rcu_read_unlock();
 
@@ -84,13 +85,15 @@ static int brd_insert_folio(struct brd_device *brd, sector_t sector, gfp_t gfp)
 {
 	pgoff_t idx;
 	struct folio *folio;
+	unsigned int rd_sector_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sector_order = get_order(PAGE_SIZE);
 	int ret = 0;
 
 	folio = brd_lookup_folio(brd, sector);
 	if (folio)
 		return 0;
 
-	folio = folio_alloc(gfp | __GFP_ZERO, 0);
+	folio = folio_alloc(gfp | __GFP_ZERO, rd_sector_order);
 	if (!folio)
 		return -ENOMEM;
 
@@ -100,7 +103,7 @@ static int brd_insert_folio(struct brd_device *brd, sector_t sector, gfp_t gfp)
 	}
 
 	spin_lock(&brd->brd_lock);
-	idx = sector >> PAGE_SECTORS_SHIFT;
+	idx = sector >> rd_sector_shift;
 	folio->index = idx;
 	if (radix_tree_insert(&brd->brd_folios, idx, folio)) {
 		folio_put(folio);
@@ -167,11 +170,14 @@ static void brd_free_folios(struct brd_device *brd)
 static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n,
 			     gfp_t gfp)
 {
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors = 1 << rd_sectors_shift;
+	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 	int ret;
 
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	copy = min_t(size_t, n, rd_sector_size - offset);
 	ret = brd_insert_folio(brd, sector, gfp);
 	if (ret)
 		return ret;
@@ -190,10 +196,13 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 {
 	struct folio *folio;
 	void *dst;
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors = 1 << rd_sectors_shift;
+	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	copy = min_t(size_t, n, rd_sector_size - offset);
 	folio = brd_lookup_folio(brd, sector);
 	BUG_ON(!folio);
 
@@ -222,10 +231,13 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 {
 	struct folio *folio;
 	void *src;
-	unsigned int offset = (sector & (PAGE_SECTORS-1)) << SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors = 1 << rd_sectors_shift;
+	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 
-	copy = min_t(size_t, n, PAGE_SIZE - offset);
+	copy = min_t(size_t, n, rd_sector_size - offset);
 	folio = brd_lookup_folio(brd, sector);
 	if (folio) {
 		src = kmap_local_folio(folio, offset);
