@@ -30,7 +30,7 @@
 /*
  * Each block ramdisk device has a radix_tree brd_folios of folios that stores
  * the folios containing the block device's contents. A brd folio's ->index is
- * its offset in PAGE_SIZE units. This is similar to, but in no way connected
+ * its offset in brd_blksize units. This is similar to, but in no way connected
  * with, the kernel's pagecache or buffer cache (which sit above our block
  * device).
  */
@@ -46,6 +46,8 @@ struct brd_device {
 	spinlock_t		brd_lock;
 	struct radix_tree_root	brd_folios;
 	u64			brd_nr_folios;
+	unsigned int		brd_sector_shift;
+	unsigned int		brd_sector_size;
 };
 
 /*
@@ -55,7 +57,7 @@ static struct folio *brd_lookup_folio(struct brd_device *brd, sector_t sector)
 {
 	pgoff_t idx;
 	struct folio *folio;
-	unsigned int rd_sector_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sector_shift = brd->brd_sector_shift - SECTOR_SHIFT;
 
 	/*
 	 * The folio lifetime is protected by the fact that we have opened the
@@ -85,8 +87,8 @@ static int brd_insert_folio(struct brd_device *brd, sector_t sector, gfp_t gfp)
 {
 	pgoff_t idx;
 	struct folio *folio;
-	unsigned int rd_sector_shift = PAGE_SHIFT - SECTOR_SHIFT;
-	unsigned int rd_sector_order = get_order(PAGE_SIZE);
+	unsigned int rd_sector_shift = brd->brd_sector_shift - SECTOR_SHIFT;
+	unsigned int rd_sector_order = get_order(brd->brd_sector_size);
 	int ret = 0;
 
 	folio = brd_lookup_folio(brd, sector);
@@ -170,9 +172,9 @@ static void brd_free_folios(struct brd_device *brd)
 static int copy_to_brd_setup(struct brd_device *brd, sector_t sector, size_t n,
 			     gfp_t gfp)
 {
-	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
-	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int rd_sector_size = brd->brd_sector_size;
 	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 	int ret;
@@ -196,9 +198,9 @@ static void copy_to_brd(struct brd_device *brd, const void *src,
 {
 	struct folio *folio;
 	void *dst;
-	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
-	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int rd_sector_size = brd->brd_sector_size;
 	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 
@@ -231,9 +233,9 @@ static void copy_from_brd(void *dst, struct brd_device *brd,
 {
 	struct folio *folio;
 	void *src;
-	unsigned int rd_sectors_shift = PAGE_SHIFT - SECTOR_SHIFT;
+	unsigned int rd_sectors_shift = brd->brd_sector_shift - SECTOR_SHIFT;
 	unsigned int rd_sectors = 1 << rd_sectors_shift;
-	unsigned int rd_sector_size = PAGE_SIZE;
+	unsigned int rd_sector_size = brd->brd_sector_size;
 	unsigned int offset = (sector & (rd_sectors - 1)) << SECTOR_SHIFT;
 	size_t copy;
 
@@ -346,6 +348,10 @@ static int max_part = 1;
 module_param(max_part, int, 0444);
 MODULE_PARM_DESC(max_part, "Num Minors to reserve between devices");
 
+static unsigned int rd_blksize = PAGE_SIZE;
+module_param(rd_blksize, uint, 0444);
+MODULE_PARM_DESC(rd_blksize, "Blocksize of each RAM disk in bytes.");
+
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_BLOCKDEV_MAJOR(RAMDISK_MAJOR);
 MODULE_ALIAS("rd");
@@ -382,6 +388,8 @@ static int brd_alloc(int i)
 		return -ENOMEM;
 	brd->brd_number		= i;
 	list_add_tail(&brd->brd_list, &brd_devices);
+	brd->brd_sector_shift = ilog2(rd_blksize);
+	brd->brd_sector_size = rd_blksize;
 
 	spin_lock_init(&brd->brd_lock);
 	INIT_RADIX_TREE(&brd->brd_folios, GFP_ATOMIC);
@@ -410,7 +418,7 @@ static int brd_alloc(int i)
 	 *  otherwise fdisk will align on 1M. Regardless this call
 	 *  is harmless)
 	 */
-	blk_queue_physical_block_size(disk->queue, PAGE_SIZE);
+	blk_queue_physical_block_size(disk->queue, rd_blksize);
 
 	/* Tell the block layer that this is not a rotational device */
 	blk_queue_flag_set(QUEUE_FLAG_NONROT, disk->queue);
