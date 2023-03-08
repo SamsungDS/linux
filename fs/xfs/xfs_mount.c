@@ -130,7 +130,15 @@ xfs_sb_validate_fsb_count(
 	xfs_sb_t	*sbp,
 	uint64_t	nblocks)
 {
-	ASSERT(PAGE_SHIFT >= sbp->sb_blocklog);
+	int		shift = PAGE_SHIFT - sbp->sb_blocklog;
+	/*
+	 * block size larger than page size still limited to page cache
+	 * page size limits.
+	 */
+	if (shift < 0)
+		shift = 0;
+
+	//ASSERT(PAGE_SHIFT >= sbp->sb_blocklog);
 	ASSERT(sbp->sb_blocklog >= BBSHIFT);
 
 	/* Limited by ULONG_MAX of page cache index */
