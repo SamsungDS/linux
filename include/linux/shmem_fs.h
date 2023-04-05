@@ -36,6 +36,9 @@ struct shmem_inode_info {
 #define SHMEM_FL_INHERITED		(FS_NODUMP_FL | FS_NOATIME_FL)
 
 struct shmem_sb_info {
+#ifdef CONFIG_TMPFS
+	u64 blocksize;
+#endif
 	unsigned long max_blocks;   /* How many blocks are allowed */
 	struct percpu_counter used_blocks;  /* How many are allocated */
 	unsigned long max_inodes;   /* How many inodes are allowed */

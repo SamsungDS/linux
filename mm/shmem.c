@@ -122,7 +122,17 @@ struct shmem_options {
 #define SHMEM_SEEN_NOSWAP 16
 };
 
+static u64 shmem_default_bsize(void)
+{
+	return PAGE_SIZE;
+}
+
 #ifdef CONFIG_TMPFS
+static u64 shmem_sb_blocksize(struct shmem_sb_info *sbinfo)
+{
+	return sbinfo->blocksize;
+}
+
 static unsigned long shmem_default_max_blocks(void)
 {
 	return totalram_pages() / 2;
@@ -134,6 +144,12 @@ static unsigned long shmem_default_max_inodes(void)
 
 	return min(nr_pages - totalhigh_pages(), nr_pages / 2);
 }
+#else
+static u64 shmem_sb_blocksize(struct shmem_sb_info *sbinfo)
+{
+	return shmem_default_bsize();
+}
+
 #endif
 
 static int shmem_swapin_folio(struct inode *inode, pgoff_t index,
@@ -2935,7 +2951,7 @@ static int shmem_statfs(struct dentry *dentry, struct kstatfs *buf)
 	struct shmem_sb_info *sbinfo = SHMEM_SB(dentry->d_sb);
 
 	buf->f_type = TMPFS_MAGIC;
-	buf->f_bsize = PAGE_SIZE;
+	buf->f_bsize = shmem_sb_blocksize(sbinfo);
 	buf->f_namelen = NAME_MAX;
 	if (sbinfo->max_blocks) {
 		buf->f_blocks = sbinfo->max_blocks;
@@ -3845,6 +3861,7 @@ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
 	}
 	sb->s_export_op = &shmem_export_ops;
 	sb->s_flags |= SB_NOSEC | SB_I_VERSION;
+	sbinfo->blocksize = shmem_default_bsize();
 #else
 	sb->s_flags |= SB_NOUSER;
 #endif
@@ -3870,8 +3887,9 @@ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
 	INIT_LIST_HEAD(&sbinfo->shrinklist);
 
 	sb->s_maxbytes = MAX_LFS_FILESIZE;
-	sb->s_blocksize = PAGE_SIZE;
-	sb->s_blocksize_bits = PAGE_SHIFT;
+	sb->s_blocksize = shmem_sb_blocksize(sbinfo);
+	sb->s_blocksize_bits = __ffs(sb->s_blocksize);
+	WARN_ON_ONCE(sb->s_blocksize_bits != PAGE_SHIFT);
 	sb->s_magic = TMPFS_MAGIC;
 	sb->s_op = &shmem_ops;
 	sb->s_time_gran = 1;
