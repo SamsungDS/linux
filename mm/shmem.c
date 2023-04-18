@@ -1618,9 +1618,15 @@ static struct folio *shmem_alloc_folio(gfp_t gfp,
 {
 	struct vm_area_struct pvma;
 	struct folio *folio;
+	struct inode *inode = &info->vfs_inode;
+	struct super_block *i_sb = inode->i_sb;
+	int order = 0;
+
+	if (!(i_sb->s_flags & SB_KERNMOUNT))
+		order = i_sb->s_blocksize_bits - PAGE_SHIFT;
 
 	shmem_pseudo_vma_init(&pvma, info, index);
-	folio = vma_alloc_folio(gfp, 0, &pvma, 0, false);
+	folio = vma_alloc_folio(gfp, order, &pvma, 0, false);
 	shmem_pseudo_vma_destroy(&pvma);
 
 	return folio;
