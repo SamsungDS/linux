@@ -140,11 +140,14 @@ static unsigned long shmem_default_max_blocks(u64 blocksize)
 	return totalram_pages() >> (__ffs(blocksize) - PAGE_SHIFT + 1);
 }
 
-static unsigned long shmem_default_max_inodes(void)
+static unsigned long shmem_default_max_inodes(u64 blocksize)
 {
 	unsigned long nr_pages = totalram_pages();
+	unsigned long pages_for_inodes = min(nr_pages - totalhigh_pages(), nr_pages / 2);
 
-	return min(nr_pages - totalhigh_pages(), nr_pages / 2);
+	if (blocksize == shmem_default_bsize())
+		return pages_for_inodes;
+	return pages_for_inodes >> (__ffs(blocksize) - PAGE_SHIFT);
 }
 #else
 static u64 shmem_sb_blocksize(struct shmem_sb_info *sbinfo)
@@ -3773,7 +3776,7 @@ static int shmem_show_options(struct seq_file *seq, struct dentry *root)
 	if (sbinfo->max_blocks != shmem_default_max_blocks(shmem_default_bsize()))
 		seq_printf(seq, ",size=%luk",
 			sbinfo->max_blocks << (PAGE_SHIFT - 10));
-	if (sbinfo->max_inodes != shmem_default_max_inodes())
+	if (sbinfo->max_inodes != shmem_default_max_inodes(shmem_default_bsize()))
 		seq_printf(seq, ",nr_inodes=%lu", sbinfo->max_inodes);
 	if (sbinfo->mode != (0777 | S_ISVTX))
 		seq_printf(seq, ",mode=%03ho", sbinfo->mode);
@@ -3854,7 +3857,7 @@ static int shmem_fill_super(struct super_block *sb, struct fs_context *fc)
 		if (!(ctx->seen & SHMEM_SEEN_BLOCKS))
 			ctx->blocks = shmem_default_max_blocks(shmem_default_bsize());
 		if (!(ctx->seen & SHMEM_SEEN_INODES))
-			ctx->inodes = shmem_default_max_inodes();
+			ctx->inodes = shmem_default_max_inodes(shmem_default_bsize());
 		if (!(ctx->seen & SHMEM_SEEN_INUMS))
 			ctx->full_inums = IS_ENABLED(CONFIG_TMPFS_INODE64);
 		sbinfo->noswap = ctx->noswap;
