@@ -101,6 +101,10 @@ static unsigned int poll_queues;
 module_param_cb(poll_queues, &io_queue_count_ops, &poll_queues, 0644);
 MODULE_PARM_DESC(poll_queues, "Number of queues to use for polled IO.");
 
+static unsigned int raw_queues;
+module_param_cb(raw_queues, &io_queue_count_ops, &raw_queues, 0644);
+MODULE_PARM_DESC(raw_queues, "Number of polled, unmanaged queues.");
+
 static bool noacpi;
 module_param(noacpi, bool, 0444);
 MODULE_PARM_DESC(noacpi, "disable acpi bios quirks");
@@ -159,6 +163,7 @@ struct nvme_dev {
 	unsigned int nr_allocated_queues;
 	unsigned int nr_write_queues;
 	unsigned int nr_poll_queues;
+	unsigned int nr_raw_queues;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
@@ -209,6 +214,7 @@ struct nvme_queue {
 #define NVMEQ_SQ_CMB		1
 #define NVMEQ_DELETE_ERROR	2
 #define NVMEQ_POLLED		3
+#define NVMEQ_RAW		4
 	__le32 *dbbuf_sq_db;
 	__le32 *dbbuf_cq_db;
 	__le32 *dbbuf_sq_ei;
@@ -1599,7 +1605,8 @@ static int nvme_setup_io_queues_trylock(struct nvme_dev *dev)
 	return 0;
 }
 
-static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled)
+static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled,
+				bool rawq)
 {
 	struct nvme_dev *dev = nvmeq->dev;
 	int result;
@@ -1613,8 +1620,11 @@ static int nvme_create_queue(struct nvme_queue *nvmeq, int qid, bool polled)
 	 */
 	if (!polled)
 		vector = dev->num_vecs == 1 ? 0 : qid;
-	else
+	else {
 		set_bit(NVMEQ_POLLED, &nvmeq->flags);
+		if (rawq)
+			set_bit(NVMEQ_RAW, &nvmeq->flags);
+	}
 
 	result = adapter_alloc_cq(dev, qid, nvmeq, vector);
 	if (result)
@@ -1770,7 +1780,7 @@ static int nvme_pci_configure_admin_queue(struct nvme_dev *dev)
 
 static int nvme_create_io_queues(struct nvme_dev *dev)
 {
-	unsigned i, max, rw_queues;
+	unsigned i, max, rw_queues, rw_poll_queues;
 	int ret = 0;
 
 	for (i = dev->ctrl.queue_count; i <= dev->max_qid; i++) {
@@ -1781,17 +1791,20 @@ static int nvme_create_io_queues(struct nvme_dev *dev)
 	}
 
 	max = min(dev->max_qid, dev->ctrl.queue_count - 1);
-	if (max != 1 && dev->io_queues[HCTX_TYPE_POLL]) {
+	if (max != 1 &&
+		(dev->io_queues[HCTX_TYPE_POLL] || dev->nr_raw_queues)) {
 		rw_queues = dev->io_queues[HCTX_TYPE_DEFAULT] +
 				dev->io_queues[HCTX_TYPE_READ];
+		rw_poll_queues = rw_queues + dev->io_queues[HCTX_TYPE_POLL];
 	} else {
 		rw_queues = max;
+		rw_poll_queues = max;
 	}
-
 	for (i = dev->online_queues; i <= max; i++) {
 		bool polled = i > rw_queues;
+		bool rawq = i > rw_poll_queues;
 
-		ret = nvme_create_queue(&dev->queues[i], i, polled);
+		ret = nvme_create_queue(&dev->queues[i], i, polled, rawq);
 		if (ret)
 			break;
 	}
@@ -2212,7 +2225,7 @@ static int nvme_setup_irqs(struct nvme_dev *dev, unsigned int nr_io_queues)
 		.calc_sets	= nvme_calc_irq_sets,
 		.priv		= dev,
 	};
-	unsigned int irq_queues, poll_queues;
+	unsigned int irq_queues, poll_queues, raw_queues;
 
 	/*
 	 * Poll queues don't need interrupts, but we need at least one I/O queue
@@ -2220,6 +2233,7 @@ static int nvme_setup_irqs(struct nvme_dev *dev, unsigned int nr_io_queues)
 	 */
 	poll_queues = min(dev->nr_poll_queues, nr_io_queues - 1);
 	dev->io_queues[HCTX_TYPE_POLL] = poll_queues;
+	raw_queues = dev->nr_raw_queues;
 
 	/*
 	 * Initialize for the single interrupt case, will be updated in
@@ -2235,7 +2249,7 @@ static int nvme_setup_irqs(struct nvme_dev *dev, unsigned int nr_io_queues)
 	 */
 	irq_queues = 1;
 	if (!(dev->ctrl.quirks & NVME_QUIRK_SINGLE_VECTOR))
-		irq_queues += (nr_io_queues - poll_queues);
+		irq_queues += (nr_io_queues - poll_queues - raw_queues);
 	return pci_alloc_irq_vectors_affinity(pdev, 1, irq_queues,
 			      PCI_IRQ_ALL_TYPES | PCI_IRQ_AFFINITY, &affd);
 }
@@ -2248,7 +2262,9 @@ static unsigned int nvme_max_io_queues(struct nvme_dev *dev)
 	 */
 	if (dev->ctrl.quirks & NVME_QUIRK_SHARED_TAGS)
 		return 1;
-	return num_possible_cpus() + dev->nr_write_queues + dev->nr_poll_queues;
+
+	return num_possible_cpus() + dev->nr_write_queues + dev->nr_poll_queues
+		+ dev->nr_raw_queues;
 }
 
 static int nvme_setup_io_queues(struct nvme_dev *dev)
@@ -2265,6 +2281,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	 */
 	dev->nr_write_queues = write_queues;
 	dev->nr_poll_queues = poll_queues;
+	dev->nr_raw_queues = raw_queues;
 
 	nr_io_queues = dev->nr_allocated_queues - 1;
 	result = nvme_set_queue_count(&dev->ctrl, &nr_io_queues);
@@ -2329,7 +2346,8 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 
 	dev->num_vecs = result;
 	result = max(result - 1, 1);
-	dev->max_qid = result + dev->io_queues[HCTX_TYPE_POLL];
+	dev->max_qid = result + dev->io_queues[HCTX_TYPE_POLL] +
+			dev->nr_raw_queues;
 
 	/*
 	 * Should investigate if there's a performance win from allocating
@@ -2356,10 +2374,11 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 		nvme_suspend_io_queues(dev);
 		goto retry;
 	}
-	dev_info(dev->ctrl.device, "%d/%d/%d default/read/poll queues\n",
+	dev_info(dev->ctrl.device, "%d/%d/%d/%d default/read/poll queues/raw queues\n",
 					dev->io_queues[HCTX_TYPE_DEFAULT],
 					dev->io_queues[HCTX_TYPE_READ],
-					dev->io_queues[HCTX_TYPE_POLL]);
+					dev->io_queues[HCTX_TYPE_POLL],
+					dev->nr_raw_queues);
 	return 0;
 out_unlock:
 	mutex_unlock(&dev->shutdown_lock);
@@ -2457,7 +2476,8 @@ static unsigned int nvme_pci_nr_maps(struct nvme_dev *dev)
 
 static void nvme_pci_update_nr_queues(struct nvme_dev *dev)
 {
-	blk_mq_update_nr_hw_queues(&dev->tagset, dev->online_queues - 1);
+	blk_mq_update_nr_hw_queues(&dev->tagset,
+			dev->online_queues - dev->nr_raw_queues - 1);
 	/* free previously allocated queues that are no longer usable */
 	nvme_free_queues(dev, dev->online_queues);
 }
@@ -2921,6 +2941,7 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 
 	dev->nr_write_queues = write_queues;
 	dev->nr_poll_queues = poll_queues;
+	dev->nr_raw_queues = raw_queues;
 	dev->nr_allocated_queues = nvme_max_io_queues(dev) + 1;
 	dev->queues = kcalloc_node(dev->nr_allocated_queues,
 			sizeof(struct nvme_queue), GFP_KERNEL, node);
@@ -3034,7 +3055,7 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (dev->online_queues > 1) {
 		nvme_alloc_io_tag_set(&dev->ctrl, &dev->tagset, &nvme_mq_ops,
 				nvme_pci_nr_maps(dev), sizeof(struct nvme_iod),
-				dev->ctrl.queue_count);
+				dev->ctrl.queue_count - dev->nr_raw_queues);
 		nvme_dbbuf_set(dev);
 	}
 
