@@ -210,7 +210,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 	unsigned long index = readahead_index(ractl);
 	gfp_t gfp_mask = readahead_gfp_mask(mapping);
 	unsigned long i;
-
+	int order = 0;
 	/*
 	 * Partway through the readahead operation, we will have added
 	 * locked pages to the page cache, but will not yet have submitted
@@ -222,6 +222,9 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 	 * gfp_mask, but let's be explicit here.
 	 */
 	unsigned int nofs = memalloc_nofs_save();
+
+	if (mapping->host->i_blkbits > PAGE_SHIFT)
+		order = mapping->host->i_blkbits - PAGE_SHIFT;
 
 	filemap_invalidate_lock_shared(mapping);
 	/*
@@ -245,7 +248,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 			continue;
 		}
 
-		folio = filemap_alloc_folio(gfp_mask, 0);
+		folio = filemap_alloc_folio(gfp_mask, order);
 		if (!folio)
 			break;
 		if (filemap_add_folio(mapping, folio, index + i,
@@ -259,7 +262,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 		if (i == nr_to_read - lookahead_size)
 			folio_set_readahead(folio);
 		ractl->_workingset |= folio_test_workingset(folio);
-		ractl->_nr_pages++;
+		ractl->_nr_pages += folio_nr_pages(folio);
 	}
 
 	/*
