@@ -496,7 +496,8 @@ static int nvme_loop_create_io_queues(struct nvme_loop_ctrl *ctrl)
 	ret = nvme_alloc_io_tag_set(&ctrl->ctrl, &ctrl->tag_set,
 			&nvme_loop_mq_ops, 1,
 			sizeof(struct nvme_loop_iod) +
-			NVME_INLINE_SG_CNT * sizeof(struct scatterlist));
+			NVME_INLINE_SG_CNT * sizeof(struct scatterlist),
+			ctrl->ctrl.queue_count);
 	if (ret)
 		goto out_destroy_queues;
 

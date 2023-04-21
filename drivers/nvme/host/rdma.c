@@ -795,7 +795,7 @@ static int nvme_rdma_alloc_tag_set(struct nvme_ctrl *ctrl)
 	return nvme_alloc_io_tag_set(ctrl, &to_rdma_ctrl(ctrl)->tag_set,
 			&nvme_rdma_mq_ops,
 			ctrl->opts->nr_poll_queues ? HCTX_MAX_TYPES : 2,
-			cmd_size);
+			cmd_size, ctrl->queue_count);
 }
 
 static void nvme_rdma_destroy_admin_queue(struct nvme_rdma_ctrl *ctrl)

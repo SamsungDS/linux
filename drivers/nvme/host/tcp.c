@@ -1893,7 +1893,8 @@ static int nvme_tcp_configure_io_queues(struct nvme_ctrl *ctrl, bool new)
 		ret = nvme_alloc_io_tag_set(ctrl, &to_tcp_ctrl(ctrl)->tag_set,
 				&nvme_tcp_mq_ops,
 				ctrl->opts->nr_poll_queues ? HCTX_MAX_TYPES : 2,
-				sizeof(struct nvme_tcp_request));
+				sizeof(struct nvme_tcp_request),
+				ctrl->queue_count);
 		if (ret)
 			goto out_free_io_queues;
 	}

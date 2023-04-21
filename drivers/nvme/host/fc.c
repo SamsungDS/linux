@@ -2918,7 +2918,8 @@ nvme_fc_create_io_queues(struct nvme_fc_ctrl *ctrl)
 	ret = nvme_alloc_io_tag_set(&ctrl->ctrl, &ctrl->tag_set,
 			&nvme_fc_mq_ops, 1,
 			struct_size((struct nvme_fcp_op_w_sgl *)NULL, priv,
-				    ctrl->lport->ops->fcprqst_priv_sz));
+				    ctrl->lport->ops->fcprqst_priv_sz),
+				    ctrl->ctrl.queue_count);
 	if (ret)
 		return ret;
 
