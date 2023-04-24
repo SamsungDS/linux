@@ -364,6 +364,9 @@ struct io_ring_ctx {
 	unsigned			sq_thread_idle;
 	/* protected by ->completion_lock */
 	unsigned			evfd_last_cq_tail;
+	/* for io_uring attached device queue */
+	int				dev_qid;
+	int				dev_fd;
 };
 
 struct io_tw_state {

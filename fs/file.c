@@ -1318,3 +1318,17 @@ int iterate_fd(struct files_struct *files, unsigned n,
 	return res;
 }
 EXPORT_SYMBOL(iterate_fd);
+
+int file_register_queue(struct file *file)
+{
+	if (file->f_op->register_queue)
+		return file->f_op->register_queue(file);
+	return -EINVAL;
+}
+
+int file_unregister_queue(struct file *file, int qid)
+{
+	if (file->f_op->unregister_queue)
+		return file->f_op->unregister_queue(file, qid);
+	return -EINVAL;
+}

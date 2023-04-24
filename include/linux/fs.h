@@ -3190,5 +3190,7 @@ extern int vfs_fadvise(struct file *file, loff_t offset, loff_t len,
 		       int advice);
 extern int generic_fadvise(struct file *file, loff_t offset, loff_t len,
 			   int advice);
+int file_register_queue(struct file *file);
+int file_unregister_queue(struct file *file, int qid);
 
 #endif /* _LINUX_FS_H */

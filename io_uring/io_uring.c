@@ -337,6 +337,8 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_WQ_LIST(&ctx->locked_free_list);
 	INIT_DELAYED_WORK(&ctx->fallback_work, io_fallback_req_func);
 	INIT_WQ_LIST(&ctx->submit_state.compl_reqs);
+	/* -EINVAL implies nothing is registered with this ring */
+	ctx->dev_qid = -EINVAL;
 	return ctx;
 err:
 	kfree(ctx->dummy_ubuf);
@@ -2822,6 +2824,51 @@ static void io_req_caches_free(struct io_ring_ctx *ctx)
 	mutex_unlock(&ctx->uring_lock);
 }
 
+static int io_register_queue(struct io_ring_ctx *ctx, void __user *arg)
+{
+	struct io_fixed_file *file_slot;
+	struct file *file;
+	__s32 __user *fds = arg;
+	int fd, qid;
+
+	if (ctx->dev_qid != -EINVAL)
+		return -EINVAL;
+	if (copy_from_user(&fd, fds, sizeof(*fds)))
+		return -EFAULT;
+	file_slot = io_fixed_file_slot(&ctx->file_table,
+			array_index_nospec(fd, ctx->nr_user_files));
+	if (!file_slot->file_ptr)
+		return -EBADF;
+	file = (struct file *)(file_slot->file_ptr & FFS_MASK);
+	qid = file_register_queue(file);
+	if (qid < 0)
+		return qid;
+	ctx->dev_fd = fd;
+	ctx->dev_qid = qid;
+	return 0;
+}
+
+static int io_unregister_queue(struct io_ring_ctx *ctx)
+{
+	struct io_fixed_file *file_slot;
+	struct file *file;
+	int ret;
+
+	if (ctx->dev_qid == -EINVAL)
+		return 0;
+	file_slot = io_fixed_file_slot(&ctx->file_table,
+			array_index_nospec(ctx->dev_fd, ctx->nr_user_files));
+	if (!file_slot)
+		return -EBADF;
+	if (!file_slot->file_ptr)
+		return -EBADF;
+	file = (struct file *)(file_slot->file_ptr & FFS_MASK);
+	ret = file_unregister_queue(file, ctx->dev_qid);
+	if (!ret)
+		ctx->dev_qid = -EINVAL;
+	return ret;
+}
+
 static void io_rsrc_node_cache_free(struct io_cache_entry *entry)
 {
 	kfree(container_of(entry, struct io_rsrc_node, cache));
@@ -2835,6 +2882,7 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 		return;
 
 	mutex_lock(&ctx->uring_lock);
+	io_unregister_queue(ctx);
 	if (ctx->buf_data)
 		__io_sqe_buffers_unregister(ctx);
 	if (ctx->file_data)
@@ -4417,6 +4465,18 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		if (!arg || nr_args)
 			break;
 		ret = io_register_file_alloc_range(ctx, arg);
+		break;
+	case IORING_REGISTER_QUEUE:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
+		ret = io_register_queue(ctx, arg);
+		break;
+	case IORING_UNREGISTER_QUEUE:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
+		ret = io_unregister_queue(ctx);
 		break;
 	default:
 		ret = -EINVAL;

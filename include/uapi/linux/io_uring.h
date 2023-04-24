@@ -523,6 +523,10 @@ enum {
 	/* register a range of fixed file slots for automatic slot allocation */
 	IORING_REGISTER_FILE_ALLOC_RANGE	= 25,
 
+	/* register a device-queue with the ring */
+	IORING_REGISTER_QUEUE			= 26,
+	IORING_UNREGISTER_QUEUE			= 27,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
