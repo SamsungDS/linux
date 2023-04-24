@@ -4059,6 +4059,30 @@ static int nvme_ns_chr_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
+int nvme_register_queue(struct file *file)
+{
+	struct nvme_ns *ns = container_of(file_inode(file)->i_cdev,
+			struct nvme_ns, cdev);
+	struct nvme_ctrl *ctrl = ns->ctrl;
+	struct request_queue *q = ns ? ns->queue : ctrl->admin_q;
+
+	if (q->mq_ops && q->mq_ops->register_queue)
+		return q->mq_ops->register_queue(ns);
+	return -EINVAL;
+}
+
+int nvme_unregister_queue(struct file *file, int qid)
+{
+	struct nvme_ns *ns = container_of(file_inode(file)->i_cdev,
+			struct nvme_ns, cdev);
+	struct nvme_ctrl *ctrl = ns->ctrl;
+	struct request_queue *q = ns ? ns->queue : ctrl->admin_q;
+
+	if (q->mq_ops && q->mq_ops->unregister_queue)
+		return q->mq_ops->unregister_queue(ns, qid);
+	return -EINVAL;
+}
+
 static const struct file_operations nvme_ns_chr_fops = {
 	.owner		= THIS_MODULE,
 	.open		= nvme_ns_chr_open,
@@ -4067,6 +4091,8 @@ static const struct file_operations nvme_ns_chr_fops = {
 	.compat_ioctl	= compat_ptr_ioctl,
 	.uring_cmd	= nvme_ns_chr_uring_cmd,
 	.uring_cmd_iopoll = nvme_ns_chr_uring_cmd_iopoll,
+	.register_queue	= nvme_register_queue,
+	.unregister_queue = nvme_unregister_queue,
 };
 
 static int nvme_add_ns_cdev(struct nvme_ns *ns)

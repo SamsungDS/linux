@@ -871,6 +871,54 @@ out_unlock:
 	return ret;
 }
 
+int nvme_ns_head_register_queue(struct file *file)
+{
+	struct cdev *cdev = file_inode(file)->i_cdev;
+	struct nvme_ns_head *head =
+		container_of(cdev, struct nvme_ns_head, cdev);
+	struct nvme_ns *ns;
+	struct nvme_ctrl *ctrl;
+	struct request_queue *q;
+	int srcu_idx, ret = -EINVAL;
+
+	srcu_idx = srcu_read_lock(&head->srcu);
+	ns = nvme_find_path(head);
+	if (!ns)
+		goto out_unlock;
+
+	ctrl = ns->ctrl;
+	q = ns ? ns->queue : ctrl->admin_q;
+	if (q->mq_ops && q->mq_ops->register_queue)
+		ret = q->mq_ops->register_queue(ns);
+out_unlock:
+	srcu_read_unlock(&head->srcu, srcu_idx);
+	return ret;
+}
+
+int nvme_ns_head_unregister_queue(struct file *file, int qid)
+{
+	struct cdev *cdev = file_inode(file)->i_cdev;
+	struct nvme_ns_head *head =
+		container_of(cdev, struct nvme_ns_head, cdev);
+	struct nvme_ns *ns;
+	struct nvme_ctrl *ctrl;
+	struct request_queue *q;
+	int srcu_idx, ret = -EINVAL;
+
+	srcu_idx = srcu_read_lock(&head->srcu);
+	ns = nvme_find_path(head);
+	if (!ns)
+		goto out_unlock;
+
+	ctrl = ns->ctrl;
+	q = ns ? ns->queue : ctrl->admin_q;
+	if (q->mq_ops && q->mq_ops->unregister_queue)
+		ret = q->mq_ops->unregister_queue(ns, qid);
+out_unlock:
+	srcu_read_unlock(&head->srcu, srcu_idx);
+	return ret;
+}
+
 int nvme_ns_head_chr_uring_cmd(struct io_uring_cmd *ioucmd,
 		unsigned int issue_flags)
 {

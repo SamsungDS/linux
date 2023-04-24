@@ -471,6 +471,8 @@ static const struct file_operations nvme_ns_head_chr_fops = {
 	.compat_ioctl	= compat_ptr_ioctl,
 	.uring_cmd	= nvme_ns_head_chr_uring_cmd,
 	.uring_cmd_iopoll = nvme_ns_head_chr_uring_cmd_iopoll,
+	.register_queue	= nvme_ns_head_register_queue,
+	.unregister_queue = nvme_ns_head_unregister_queue,
 };
 
 static int nvme_add_ns_head_cdev(struct nvme_ns_head *head)
