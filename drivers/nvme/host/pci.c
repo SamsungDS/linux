@@ -116,6 +116,15 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 static void nvme_delete_io_queues(struct nvme_dev *dev);
 static void nvme_update_attrs(struct nvme_dev *dev);
 
+enum {
+	Q_FREE,
+	Q_ALLOC
+};
+struct rawq_info {
+	int nr_free;
+	int q_state[];
+};
+
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
@@ -164,6 +173,8 @@ struct nvme_dev {
 	unsigned int nr_write_queues;
 	unsigned int nr_poll_queues;
 	unsigned int nr_raw_queues;
+	struct mutex rawq_lock;
+	struct rawq_info *rawqi;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
@@ -195,6 +206,10 @@ struct nvme_queue {
 	struct nvme_dev *dev;
 	spinlock_t sq_lock;
 	void *sq_cmds;
+	 /* only used for raw queues: */
+	unsigned long *cmdid_bmp;
+	spinlock_t cmdid_lock;
+	struct nvme_iod *iod;
 	 /* only used for poll queues: */
 	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
 	struct nvme_completion *cqes;
@@ -1661,6 +1676,141 @@ release_cq:
 	return result;
 }
 
+static int setup_rawq_info(struct nvme_dev *dev, int nr_rawq)
+{
+	struct rawq_info *rawqi;
+	int size = sizeof(struct rawq_info) + nr_rawq * sizeof(int);
+
+	rawqi = kzalloc(size, GFP_KERNEL);
+	if (rawqi == NULL)
+		return -ENOMEM;
+	rawqi->nr_free = nr_rawq;
+	dev->rawqi = rawqi;
+	return 0;
+}
+
+static int nvme_pci_get_rawq(struct nvme_dev *dev)
+{
+	int i, qid, nr_rawq;
+	struct rawq_info *rawqi = NULL;
+	int ret = -EINVAL;
+
+	nr_rawq = dev->nr_raw_queues;
+	if (!nr_rawq)
+		return ret;
+
+	mutex_lock(&dev->rawq_lock);
+	if (dev->rawqi == NULL) {
+		ret = setup_rawq_info(dev, nr_rawq);
+		if (ret)
+			goto unlock;
+	}
+	rawqi = dev->rawqi;
+	if (rawqi->nr_free == 0) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	for (i = 0; i < nr_rawq; i++) {
+		if (rawqi->q_state[i] == Q_FREE) {
+			rawqi->q_state[i] = Q_ALLOC;
+			qid = dev->nr_allocated_queues - nr_rawq - i;
+			rawqi->nr_free--;
+			ret = qid;
+			goto unlock;
+		}
+	}
+unlock:
+	mutex_unlock(&dev->rawq_lock);
+	return ret;
+}
+
+static int nvme_pci_put_rawq(struct nvme_dev *dev, int qid)
+{
+	int i, nr_rawq;
+	struct rawq_info *rawqi = NULL;
+	struct nvme_queue *nvmeq;
+
+	nr_rawq = dev->nr_raw_queues;
+	if (!nr_rawq || dev->rawqi == NULL)
+		return -EINVAL;
+
+	i = dev->nr_allocated_queues - nr_rawq - qid;
+	mutex_lock(&dev->rawq_lock);
+	rawqi = dev->rawqi;
+	if (rawqi->q_state[i] == Q_ALLOC) {
+		rawqi->q_state[i] = Q_FREE;
+		rawqi->nr_free++;
+	}
+	mutex_unlock(&dev->rawq_lock);
+	nvmeq = &dev->queues[qid];
+	kfree(nvmeq->cmdid_bmp);
+	kfree(nvmeq->iod);
+	return 0;
+}
+
+static int nvme_pci_alloc_cmdid_bmp(struct nvme_queue *nvmeq)
+{
+	int size = BITS_TO_LONGS(nvmeq->q_depth) * sizeof(unsigned long);
+
+	if (!test_bit(NVMEQ_RAW, &nvmeq->flags))
+		return -EINVAL;
+	nvmeq->cmdid_bmp = kzalloc(size, GFP_KERNEL);
+	if (!nvmeq->cmdid_bmp)
+		return -ENOMEM;
+	spin_lock_init(&nvmeq->cmdid_lock);
+	return 0;
+}
+
+static int nvme_pci_alloc_iod_array(struct nvme_queue *nvmeq)
+{
+	if (!test_bit(NVMEQ_RAW, &nvmeq->flags))
+		return -EINVAL;
+	nvmeq->iod = kcalloc(nvmeq->q_depth - 1, sizeof(struct nvme_iod),
+				 GFP_KERNEL);
+	if (!nvmeq->iod)
+		return -ENOMEM;
+	return 0;
+}
+
+static int nvme_pci_setup_rawq(struct nvme_queue *nvmeq)
+{
+	int ret;
+
+	ret = nvme_pci_alloc_cmdid_bmp(nvmeq);
+	if (ret)
+		return ret;
+	ret = nvme_pci_alloc_iod_array(nvmeq);
+	if (ret) {
+		kfree(nvmeq->cmdid_bmp);
+		return ret;
+	}
+	return ret;
+}
+
+static int nvme_pci_register_queue(void *data)
+{
+	struct nvme_ns *ns = (struct nvme_ns *) data;
+	struct nvme_dev *dev = to_nvme_dev(ns->ctrl);
+	int qid, ret;
+
+	qid = nvme_pci_get_rawq(dev);
+	if (qid > 0) {
+		/* setup command-id bitmap and iod array */
+		ret = nvme_pci_setup_rawq(&dev->queues[qid]);
+		if (ret < 0)
+			qid = ret;
+	}
+	return qid;
+}
+
+static int nvme_pci_unregister_queue(void *data, int qid)
+{
+	struct nvme_ns *ns = (struct nvme_ns *) data;
+	struct nvme_dev *dev = to_nvme_dev(ns->ctrl);
+
+	return nvme_pci_put_rawq(dev, qid);
+}
+
 static const struct blk_mq_ops nvme_mq_admin_ops = {
 	.queue_rq	= nvme_queue_rq,
 	.complete	= nvme_pci_complete_rq,
@@ -1679,6 +1829,8 @@ static const struct blk_mq_ops nvme_mq_ops = {
 	.map_queues	= nvme_pci_map_queues,
 	.timeout	= nvme_timeout,
 	.poll		= nvme_poll,
+	.register_queue	= nvme_pci_register_queue,
+	.unregister_queue =  nvme_pci_unregister_queue,
 };
 
 static void nvme_dev_remove_admin(struct nvme_dev *dev)
@@ -2698,6 +2850,7 @@ static void nvme_pci_free_ctrl(struct nvme_ctrl *ctrl)
 	nvme_free_tagset(dev);
 	put_device(dev->dev);
 	kfree(dev->queues);
+	kfree(dev->rawqi);
 	kfree(dev);
 }
 
@@ -2938,6 +3091,7 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 		return ERR_PTR(-ENOMEM);
 	INIT_WORK(&dev->ctrl.reset_work, nvme_reset_work);
 	mutex_init(&dev->shutdown_lock);
+	mutex_init(&dev->rawq_lock);
 
 	dev->nr_write_queues = write_queues;
 	dev->nr_poll_queues = poll_queues;
