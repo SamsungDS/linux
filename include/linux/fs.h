@@ -1798,6 +1798,8 @@ struct file_operations {
 	int (*uring_cmd)(struct io_uring_cmd *ioucmd, unsigned int issue_flags);
 	int (*uring_cmd_iopoll)(struct io_uring_cmd *, struct io_comp_batch *,
 				unsigned int poll_flags);
+	int (*register_queue)(struct file *f);
+	int (*unregister_queue)(struct file *f, int qid);
 } __randomize_layout;
 
 struct inode_operations {
