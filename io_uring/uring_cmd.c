@@ -89,9 +89,12 @@ int io_uring_cmd_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return -EINVAL;
 
 	ioucmd->flags = READ_ONCE(sqe->uring_cmd_flags);
-	if (ioucmd->flags & ~IORING_URING_CMD_FIXED)
+	if (ioucmd->flags & ~(IORING_URING_CMD_FIXED | IORING_URING_CMD_DIRECT))
 		return -EINVAL;
 
+	if (ioucmd->flags & IORING_URING_CMD_DIRECT &&
+			req->ctx->dev_qid == -EINVAL)
+		return -EINVAL;
 	if (ioucmd->flags & IORING_URING_CMD_FIXED) {
 		struct io_ring_ctx *ctx = req->ctx;
 		u16 index;
@@ -162,3 +165,12 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 	return io_import_fixed(rw, iter, req->imu, ubuf, len);
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed);
+
+int io_uring_cmd_import_qid(void *ioucmd)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
+	struct io_ring_ctx *ctx = req->ctx;
+
+	return ctx->dev_qid;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_import_qid);
