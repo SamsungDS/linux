@@ -430,14 +430,6 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
-struct nvme_uring_data {
-	__u64	metadata;
-	__u64	addr;
-	__u32	data_len;
-	__u32	metadata_len;
-	__u32	timeout_ms;
-};
-
 /*
  * This overlays struct io_uring_cmd pdu.
  * Expect build errors if this grows larger than that.
@@ -548,11 +540,50 @@ static enum rq_end_io_ret nvme_uring_cmd_end_io_meta(struct request *req,
 	return RQ_END_IO_NONE;
 }
 
+int nvme_prep_cmd_from_ioucmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
+		struct io_uring_cmd *ioucmd, struct nvme_command *c,
+		struct nvme_uring_data *d)
+{
+	const struct nvme_uring_cmd *cmd = ioucmd->cmd;
+
+	c->common.opcode = READ_ONCE(cmd->opcode);
+	c->common.flags = READ_ONCE(cmd->flags);
+	if (c->common.flags)
+		return -EINVAL;
+
+	c->common.command_id = 0;
+	c->common.nsid = cpu_to_le32(cmd->nsid);
+	if (!nvme_validate_passthru_nsid(ctrl, ns, le32_to_cpu(c->common.nsid)))
+		return -EINVAL;
+
+	c->common.cdw2[0] = cpu_to_le32(READ_ONCE(cmd->cdw2));
+	c->common.cdw2[1] = cpu_to_le32(READ_ONCE(cmd->cdw3));
+	c->common.metadata = 0;
+	c->common.dptr.prp1 = c->common.dptr.prp2 = 0;
+	c->common.cdw10 = cpu_to_le32(READ_ONCE(cmd->cdw10));
+	c->common.cdw11 = cpu_to_le32(READ_ONCE(cmd->cdw11));
+	c->common.cdw12 = cpu_to_le32(READ_ONCE(cmd->cdw12));
+	c->common.cdw13 = cpu_to_le32(READ_ONCE(cmd->cdw13));
+	c->common.cdw14 = cpu_to_le32(READ_ONCE(cmd->cdw14));
+	c->common.cdw15 = cpu_to_le32(READ_ONCE(cmd->cdw15));
+
+	if (!nvme_cmd_allowed(ns, c, 0, ioucmd->file->f_mode))
+		return -EACCES;
+
+	d->metadata = READ_ONCE(cmd->metadata);
+	d->addr = READ_ONCE(cmd->addr);
+	d->data_len = READ_ONCE(cmd->data_len);
+	d->metadata_len = READ_ONCE(cmd->metadata_len);
+	d->timeout_ms = READ_ONCE(cmd->timeout_ms);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nvme_prep_cmd_from_ioucmd);
+
+
 static int nvme_uring_cmd_io(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		struct io_uring_cmd *ioucmd, unsigned int issue_flags, bool vec)
 {
 	struct nvme_uring_cmd_pdu *pdu = nvme_uring_cmd_pdu(ioucmd);
-	const struct nvme_uring_cmd *cmd = ioucmd->cmd;
 	struct request_queue *q = ns ? ns->queue : ctrl->admin_q;
 	struct nvme_uring_data d;
 	struct nvme_command c;
@@ -562,35 +593,9 @@ static int nvme_uring_cmd_io(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	void *meta = NULL;
 	int ret;
 
-	c.common.opcode = READ_ONCE(cmd->opcode);
-	c.common.flags = READ_ONCE(cmd->flags);
-	if (c.common.flags)
-		return -EINVAL;
-
-	c.common.command_id = 0;
-	c.common.nsid = cpu_to_le32(cmd->nsid);
-	if (!nvme_validate_passthru_nsid(ctrl, ns, le32_to_cpu(c.common.nsid)))
-		return -EINVAL;
-
-	c.common.cdw2[0] = cpu_to_le32(READ_ONCE(cmd->cdw2));
-	c.common.cdw2[1] = cpu_to_le32(READ_ONCE(cmd->cdw3));
-	c.common.metadata = 0;
-	c.common.dptr.prp1 = c.common.dptr.prp2 = 0;
-	c.common.cdw10 = cpu_to_le32(READ_ONCE(cmd->cdw10));
-	c.common.cdw11 = cpu_to_le32(READ_ONCE(cmd->cdw11));
-	c.common.cdw12 = cpu_to_le32(READ_ONCE(cmd->cdw12));
-	c.common.cdw13 = cpu_to_le32(READ_ONCE(cmd->cdw13));
-	c.common.cdw14 = cpu_to_le32(READ_ONCE(cmd->cdw14));
-	c.common.cdw15 = cpu_to_le32(READ_ONCE(cmd->cdw15));
-
-	if (!nvme_cmd_allowed(ns, &c, 0, ioucmd->file->f_mode))
-		return -EACCES;
-
-	d.metadata = READ_ONCE(cmd->metadata);
-	d.addr = READ_ONCE(cmd->addr);
-	d.data_len = READ_ONCE(cmd->data_len);
-	d.metadata_len = READ_ONCE(cmd->metadata_len);
-	d.timeout_ms = READ_ONCE(cmd->timeout_ms);
+	ret = nvme_prep_cmd_from_ioucmd(ctrl, ns, ioucmd, &c, &d);
+	if (ret)
+		return ret;
 
 	if (issue_flags & IO_URING_F_NONBLOCK) {
 		rq_flags |= REQ_NOWAIT;
