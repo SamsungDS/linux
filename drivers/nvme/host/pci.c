@@ -28,6 +28,8 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/nvme_ioctl.h>
+#include <linux/io_uring.h>
 
 #include "trace.h"
 #include "nvme.h"
@@ -210,6 +212,7 @@ struct nvme_queue {
 	unsigned long *cmdid_bmp;
 	spinlock_t cmdid_lock;
 	struct nvme_iod *iod;
+	u8	reg_id;
 	 /* only used for poll queues: */
 	spinlock_t cq_poll_lock ____cacheline_aligned_in_smp;
 	struct nvme_completion *cqes;
@@ -249,7 +252,11 @@ union nvme_descriptor {
  * to the actual struct scatterlist.
  */
 struct nvme_iod {
-	struct nvme_request req;
+	union {
+		struct nvme_request req;
+		/* for raw-queue */
+		struct io_uring_cmd *ioucmd;
+	};
 	struct nvme_command cmd;
 	bool aborted;
 	s8 nr_allocations;	/* PRP list pool allocations. 0 means small
@@ -1025,11 +1032,49 @@ static inline void nvme_ring_cq_doorbell(struct nvme_queue *nvmeq)
 		writel(head, nvmeq->q_db + nvmeq->dev->db_stride);
 }
 
+static void nvme_pci_put_cmdid(struct nvme_queue *nvmeq, int id)
+{
+	spin_lock(&nvmeq->cmdid_lock);
+	clear_bit(id, nvmeq->cmdid_bmp);
+	spin_unlock(&nvmeq->cmdid_lock);
+}
+
 static inline struct blk_mq_tags *nvme_queue_tagset(struct nvme_queue *nvmeq)
 {
 	if (!nvmeq->qid)
 		return nvmeq->dev->admin_tagset.tags[0];
 	return nvmeq->dev->tagset.tags[nvmeq->qid - 1];
+}
+
+static inline struct nvme_uring_direct_pdu *nvme_uring_cmd_direct_pdu(
+		struct io_uring_cmd *ioucmd)
+{
+	return (struct nvme_uring_direct_pdu *)&ioucmd->pdu;
+}
+
+static inline void nvme_handle_cqe_rawq(struct nvme_queue *nvmeq,
+					struct nvme_completion *cqe,
+					__u16 command_id)
+{
+	struct nvme_dev *dev = nvmeq->dev;
+	u32 status = le16_to_cpu(cqe->status) >> 1;
+	u64 result = cqe->result.u64;
+	struct nvme_iod *iod;
+	int id, reg_id;
+
+	reg_id = nvme_genctr_from_cid(command_id);
+	/* we should not encounter completions from past registration*/
+	WARN_ON_ONCE(nvmeq->reg_id != reg_id);
+
+	id = nvme_tag_from_cid(command_id);
+	iod = &nvmeq->iod[id];
+
+	if (iod->dma_len)
+		dma_unmap_page(dev->dev, iod->first_dma, iod->dma_len,
+		nvme_is_write(&iod->cmd) ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
+
+	nvme_pci_put_cmdid(nvmeq, id);
+	io_uring_cmd_done(iod->ioucmd, status, result, IO_URING_F_UNLOCKED);
 }
 
 static inline void nvme_handle_cqe(struct nvme_queue *nvmeq,
@@ -1038,6 +1083,9 @@ static inline void nvme_handle_cqe(struct nvme_queue *nvmeq,
 	struct nvme_completion *cqe = &nvmeq->cqes[idx];
 	__u16 command_id = READ_ONCE(cqe->command_id);
 	struct request *req;
+
+	if (test_bit(NVMEQ_RAW, &nvmeq->flags))
+		return nvme_handle_cqe_rawq(nvmeq, cqe, command_id);
 
 	/*
 	 * AEN requests are special as they don't time out and can
@@ -1139,6 +1187,25 @@ static void nvme_poll_irqdisable(struct nvme_queue *nvmeq)
 static int nvme_poll(struct blk_mq_hw_ctx *hctx, struct io_comp_batch *iob)
 {
 	struct nvme_queue *nvmeq = hctx->driver_data;
+	bool found;
+
+	if (!nvme_cqe_pending(nvmeq))
+		return 0;
+
+	spin_lock(&nvmeq->cq_poll_lock);
+	found = nvme_poll_cq(nvmeq, iob);
+	spin_unlock(&nvmeq->cq_poll_lock);
+
+	return found;
+}
+
+static int nvme_poll_uring_cmd(struct io_uring_cmd *ioucmd, int qid,
+			       struct io_comp_batch *iob)
+
+{
+	struct nvme_uring_direct_pdu *pdu = nvme_uring_cmd_direct_pdu(ioucmd);
+	struct nvme_dev *dev = to_nvme_dev(pdu->ns->ctrl);
+	struct nvme_queue *nvmeq = &dev->queues[qid];
 	bool found;
 
 	if (!nvme_cqe_pending(nvmeq))
@@ -1762,6 +1829,22 @@ static int nvme_pci_alloc_cmdid_bmp(struct nvme_queue *nvmeq)
 	return 0;
 }
 
+static int nvme_pci_get_cmdid(struct nvme_queue *nvmeq)
+{
+	int id = 0, size = nvmeq->q_depth - 1;
+
+	spin_lock(&nvmeq->cmdid_lock);
+	id = find_first_zero_bit(nvmeq->cmdid_bmp, size);
+	if (id >= size) {
+		id = -EBUSY;
+		goto unlock;
+	}
+	set_bit(id, nvmeq->cmdid_bmp);
+unlock:
+	spin_unlock(&nvmeq->cmdid_lock);
+	return id;
+}
+
 static int nvme_pci_alloc_iod_array(struct nvme_queue *nvmeq)
 {
 	if (!test_bit(NVMEQ_RAW, &nvmeq->flags))
@@ -1793,13 +1876,17 @@ static int nvme_pci_register_queue(void *data)
 	struct nvme_ns *ns = (struct nvme_ns *) data;
 	struct nvme_dev *dev = to_nvme_dev(ns->ctrl);
 	int qid, ret;
+	struct nvme_queue *nvmeq;
 
 	qid = nvme_pci_get_rawq(dev);
 	if (qid > 0) {
 		/* setup command-id bitmap and iod array */
-		ret = nvme_pci_setup_rawq(&dev->queues[qid]);
+		nvmeq = &dev->queues[qid];
+		ret = nvme_pci_setup_rawq(nvmeq);
 		if (ret < 0)
 			qid = ret;
+		else
+			nvmeq->reg_id++;
 	}
 	return qid;
 }
@@ -1810,6 +1897,107 @@ static int nvme_pci_unregister_queue(void *data, int qid)
 	struct nvme_dev *dev = to_nvme_dev(ns->ctrl);
 
 	return nvme_pci_put_rawq(dev, qid);
+}
+
+static int nvme_map_io_fb(struct request_queue *q, struct io_uring_cmd *ioucmd,
+			struct nvme_dev *dev, struct nvme_iod *iod,
+			unsigned long addr, unsigned int buf_len)
+{
+	struct nvme_command *cmnd = &iod->cmd;
+	int ret, rw = nvme_is_write(cmnd);
+	struct iov_iter iter;
+	size_t nr_iter, nr_segs;
+	struct bio_vec *bv;
+
+	if (!(ioucmd->flags & IORING_URING_CMD_FIXED))
+		return -EINVAL;
+
+	ret = io_uring_cmd_import_fixed(addr, buf_len, rw, &iter, ioucmd);
+	if (ret < 0)
+		return ret;
+	nr_iter = iov_iter_count(&iter);
+	nr_segs = iter.nr_segs;
+
+	/* device will do these checks anyway, so why do duplicate work? */
+	if (!nr_iter || (nr_iter >> SECTOR_SHIFT) > queue_max_hw_sectors(q))
+		goto err;
+	if (nr_segs > queue_max_segments(q))
+		goto err;
+	/* this will be attempted from regular path instead */
+	if (nr_segs > 1)
+		goto err;
+
+	bv = (struct bio_vec *)&iter.bvec[0];
+	if (bv->bv_offset + bv->bv_len <= NVME_CTRL_PAGE_SIZE * 2)
+		return nvme_setup_prp_simple(dev, iod,
+				(struct nvme_rw_command *)cmnd,
+				bv, rw ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
+err:
+	return -EINVAL;
+}
+
+static int nvme_alloc_cmd_from_q(struct nvme_queue *nvmeq, int *cmdid,
+				struct nvme_iod **iod)
+{
+	int id;
+
+	id = nvme_pci_get_cmdid(nvmeq);
+	if (id < 0)
+		return id;
+	*cmdid = id | nvme_cid_install_genctr(nvmeq->reg_id);
+	*iod = &nvmeq->iod[id];
+	return 0;
+}
+
+static int nvme_pci_queue_ucmd(struct io_uring_cmd *ioucmd, int qid)
+{
+	struct nvme_uring_direct_pdu *pdu = nvme_uring_cmd_direct_pdu(ioucmd);
+	struct nvme_ns *ns = pdu->ns;
+	struct nvme_ctrl *ctrl = ns->ctrl;
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+	struct nvme_command *nvme_cmd;
+	struct nvme_uring_data d;
+	int ret, cmdid;
+	struct nvme_iod *iod;
+	struct nvme_queue *nvmeq = &dev->queues[qid];
+
+	ret = nvme_alloc_cmd_from_q(nvmeq, &cmdid, &iod);
+	if (ret)
+		return ret;
+
+	iod->ioucmd = ioucmd;
+	nvme_cmd = &iod->cmd;
+	ret = nvme_prep_cmd_from_ioucmd(ctrl, ns, ioucmd, nvme_cmd, &d);
+	if (ret)
+		goto out;
+
+	nvme_cmd->common.command_id = cmdid;
+	iod->aborted = false;
+	iod->nr_allocations = -1;
+	iod->sgt.nents = 0;
+	ret = nvme_map_io_fb(ns->queue, ioucmd, dev, iod, d.addr, d.data_len);
+	if  (ret)
+		goto out;
+
+	/*
+	 * since this nvmeq is exclusive to single submitter (io_uring
+	 * follows one-thread-per-ring model), we do not need the lock
+	 * ideally. But we have lifetime difference between io_uring
+	 * and nvme sqe. io_uring SQE can be reused just after submission
+	 * but for nvme we have to wait until completion.
+	 * So if we run out of space, submission will be deferred to
+	 * io_uring worker. So we can't skip the lock.
+	 * But not all is lost! Due to one-thread-per-ring model and
+	 * polled-completion, contention is not common in most cases.
+	 */
+	spin_lock(&nvmeq->sq_lock);
+	nvme_sq_copy_cmd(nvmeq, &iod->cmd);
+	nvme_write_sq_db(nvmeq, true);
+	spin_unlock(&nvmeq->sq_lock);
+	return -EIOCBQUEUED;
+out:
+	nvme_pci_put_cmdid(nvmeq, cmdid);
+	return ret;
 }
 
 static const struct blk_mq_ops nvme_mq_admin_ops = {
@@ -1832,6 +2020,8 @@ static const struct blk_mq_ops nvme_mq_ops = {
 	.poll		= nvme_poll,
 	.register_queue	= nvme_pci_register_queue,
 	.unregister_queue =  nvme_pci_unregister_queue,
+	.queue_uring_cmd = nvme_pci_queue_ucmd,
+	.poll_uring_cmd	= nvme_poll_uring_cmd,
 };
 
 static void nvme_dev_remove_admin(struct nvme_dev *dev)
