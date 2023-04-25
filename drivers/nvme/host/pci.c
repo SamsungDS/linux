@@ -750,14 +750,13 @@ static blk_status_t nvme_pci_setup_sgls(struct nvme_dev *dev,
 }
 
 static blk_status_t nvme_setup_prp_simple(struct nvme_dev *dev,
-		struct request *req, struct nvme_rw_command *cmnd,
-		struct bio_vec *bv)
+		struct nvme_iod *iod, struct nvme_rw_command *cmnd,
+		struct bio_vec *bv, int dma_dir)
 {
-	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
 	unsigned int offset = bv->bv_offset & (NVME_CTRL_PAGE_SIZE - 1);
 	unsigned int first_prp_len = NVME_CTRL_PAGE_SIZE - offset;
 
-	iod->first_dma = dma_map_bvec(dev->dev, bv, rq_dma_dir(req), 0);
+	iod->first_dma = dma_map_bvec(dev->dev, bv, dma_dir, 0);
 	if (dma_mapping_error(dev->dev, iod->first_dma))
 		return BLK_STS_RESOURCE;
 	iod->dma_len = bv->bv_len;
@@ -801,8 +800,10 @@ static blk_status_t nvme_map_data(struct nvme_dev *dev, struct request *req,
 
 		if (!is_pci_p2pdma_page(bv.bv_page)) {
 			if (bv.bv_offset + bv.bv_len <= NVME_CTRL_PAGE_SIZE * 2)
-				return nvme_setup_prp_simple(dev, req,
-							     &cmnd->rw, &bv);
+				return nvme_setup_prp_simple(dev,
+					       blk_mq_rq_to_pdu(req),
+					       &cmnd->rw, &bv,
+					       rq_dma_dir(req));
 
 			if (nvmeq->qid && sgl_threshold &&
 			    nvme_ctrl_sgl_supported(&dev->ctrl))
