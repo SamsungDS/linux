@@ -176,6 +176,10 @@ struct nvme_uring_data {
 	__u32	timeout_ms;
 };
 
+struct nvme_uring_direct_pdu {
+	struct nvme_ns *ns;
+};
+
 /*
  * Mark a bio as coming in through the mpath node.
  */
