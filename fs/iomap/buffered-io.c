@@ -1283,7 +1283,7 @@ vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf, const struct iomap_ops *ops)
 	return VM_FAULT_LOCKED;
 out_unlock:
 	folio_unlock(folio);
-	return block_page_mkwrite_return(ret);
+	return errno_to_vmfault(ret);
 }
 EXPORT_SYMBOL_GPL(iomap_page_mkwrite);
 

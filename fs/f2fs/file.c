@@ -161,7 +161,7 @@ out_sem:
 
 	sb_end_pagefault(inode->i_sb);
 err:
-	return block_page_mkwrite_return(err);
+	return errno_to_vmfault(err);
 }
 
 static const struct vm_operations_struct f2fs_file_vm_ops = {
