@@ -16,8 +16,6 @@
 #include <linux/wait.h>
 #include <linux/atomic.h>
 
-#ifdef CONFIG_BLOCK
-
 enum bh_state_bits {
 	BH_Uptodate,	/* Contains valid data */
 	BH_Dirty,	/* Is dirty */
@@ -198,7 +196,6 @@ void set_bh_page(struct buffer_head *bh,
 		struct page *page, unsigned long offset);
 void folio_set_bh(struct buffer_head *bh, struct folio *folio,
 		  unsigned long offset);
-bool try_to_free_buffers(struct folio *);
 struct buffer_head *folio_alloc_buffers(struct folio *folio, unsigned long size,
 					bool retry);
 struct buffer_head *alloc_page_buffers(struct page *page, unsigned long size,
@@ -213,10 +210,6 @@ void end_buffer_async_write(struct buffer_head *bh, int uptodate);
 
 /* Things to do with buffers at mapping->private_list */
 void mark_buffer_dirty_inode(struct buffer_head *bh, struct inode *inode);
-int inode_has_buffers(struct inode *);
-void invalidate_inode_buffers(struct inode *);
-int remove_inode_buffers(struct inode *inode);
-int sync_mapping_buffers(struct address_space *mapping);
 void clean_bdev_aliases(struct block_device *bdev, sector_t block,
 			sector_t len);
 static inline void clean_bdev_bh_alias(struct buffer_head *bh)
@@ -236,9 +229,6 @@ void __bforget(struct buffer_head *);
 void __breadahead(struct block_device *, sector_t block, unsigned int size);
 struct buffer_head *__bread_gfp(struct block_device *,
 				sector_t block, unsigned size, gfp_t gfp);
-void invalidate_bh_lrus(void);
-void invalidate_bh_lrus_cpu(void);
-bool has_bh_in_lru(int cpu, void *dummy);
 struct buffer_head *alloc_buffer_head(gfp_t gfp_flags);
 void free_buffer_head(struct buffer_head * bh);
 void unlock_buffer(struct buffer_head *bh);
@@ -253,8 +243,6 @@ int bh_uptodate_or_lock(struct buffer_head *bh);
 int __bh_read(struct buffer_head *bh, blk_opf_t op_flags, bool wait);
 void __bh_read_batch(int nr, struct buffer_head *bhs[],
 		     blk_opf_t op_flags, bool force_lock);
-
-extern int buffer_heads_over_limit;
 
 /*
  * Generic address_space_operations implementations for buffer_head-backed
@@ -299,8 +287,6 @@ extern int buffer_migrate_folio_norefs(struct address_space *,
 #define buffer_migrate_folio NULL
 #define buffer_migrate_folio_norefs NULL
 #endif
-
-void buffer_init(void);
 
 /*
  * inline definitions
@@ -461,7 +447,20 @@ __bread(struct block_device *bdev, sector_t block, unsigned size)
 
 bool block_dirty_folio(struct address_space *mapping, struct folio *folio);
 
-#else /* CONFIG_BLOCK */
+#ifdef CONFIG_BUFFER_HEAD
+
+void buffer_init(void);
+bool try_to_free_buffers(struct folio *folio);
+int inode_has_buffers(struct inode *inode);
+void invalidate_inode_buffers(struct inode *inode);
+int remove_inode_buffers(struct inode *inode);
+int sync_mapping_buffers(struct address_space *mapping);
+void invalidate_bh_lrus(void);
+void invalidate_bh_lrus_cpu(void);
+bool has_bh_in_lru(int cpu, void *dummy);
+extern int buffer_heads_over_limit;
+
+#else /* CONFIG_BUFFER_HEAD */
 
 static inline void buffer_init(void) {}
 static inline bool try_to_free_buffers(struct folio *folio) { return true; }
@@ -469,9 +468,10 @@ static inline int inode_has_buffers(struct inode *inode) { return 0; }
 static inline void invalidate_inode_buffers(struct inode *inode) {}
 static inline int remove_inode_buffers(struct inode *inode) { return 1; }
 static inline int sync_mapping_buffers(struct address_space *mapping) { return 0; }
+static inline void invalidate_bh_lrus(void) {}
 static inline void invalidate_bh_lrus_cpu(void) {}
 static inline bool has_bh_in_lru(int cpu, void *dummy) { return false; }
 #define buffer_heads_over_limit 0
 
-#endif /* CONFIG_BLOCK */
+#endif /* CONFIG_BUFFER_HEAD */
 #endif /* _LINUX_BUFFER_HEAD_H */

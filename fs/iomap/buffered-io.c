@@ -42,6 +42,12 @@ static inline struct iomap_page *to_iomap_page(struct folio *folio)
 	return NULL;
 }
 
+static inline bool iomap_use_buffer_heads(const struct iomap *iomap)
+{
+	return IS_ENABLED(CONFIG_BUFFER_HEAD) &&
+		(iomap->flags & IOMAP_F_BUFFER_HEAD);
+}
+
 static struct bio_set iomap_ioend_bioset;
 
 static struct iomap_page *
@@ -676,7 +682,7 @@ static int iomap_write_begin(struct iomap_iter *iter, loff_t pos,
 
 	if (srcmap->type == IOMAP_INLINE)
 		status = iomap_write_begin_inline(iter, folio);
-	else if (srcmap->flags & IOMAP_F_BUFFER_HEAD)
+	else if (iomap_use_buffer_heads(srcmap))
 		status = __block_write_begin_int(folio, pos, len, NULL, srcmap);
 	else
 		status = __iomap_write_begin(iter, pos, len, folio);
@@ -746,7 +752,7 @@ static size_t iomap_write_end(struct iomap_iter *iter, loff_t pos, size_t len,
 
 	if (srcmap->type == IOMAP_INLINE) {
 		ret = iomap_write_end_inline(iter, folio, pos, copied);
-	} else if (srcmap->flags & IOMAP_F_BUFFER_HEAD) {
+	} else if (iomap_use_buffer_heads(srcmap)) {
 		ret = block_write_end(NULL, iter->inode->i_mapping, pos, len,
 				copied, &folio->page, NULL);
 	} else {
@@ -1249,7 +1255,7 @@ static loff_t iomap_folio_mkwrite_iter(struct iomap_iter *iter,
 	loff_t length = iomap_length(iter);
 	int ret;
 
-	if (iter->iomap.flags & IOMAP_F_BUFFER_HEAD) {
+	if (iomap_use_buffer_heads(&iter->iomap)) {
 		ret = __block_write_begin_int(folio, iter->pos, length, NULL,
 					      &iter->iomap);
 		if (ret)
