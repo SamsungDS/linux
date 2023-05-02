@@ -583,8 +583,13 @@ static int blkdev_close(struct inode *inode, struct file *filp)
 static ssize_t
 blkdev_direct_write(struct kiocb *iocb, struct iov_iter *from)
 {
+	struct file *file = iocb->ki_filp;
+	struct block_device *bdev = file->private_data;
 	size_t count = iov_iter_count(from);
 	ssize_t written;
+
+	if (count < bdev_logical_block_size(bdev))
+		return -EINVAL;
 
 	written = kiocb_invalidate_pages(iocb, count);
 	if (written) {
