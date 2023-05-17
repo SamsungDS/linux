@@ -175,3 +175,8 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+# cijoe
+cijoe-archive
+cijoe-output
+scripts/__pycache__/

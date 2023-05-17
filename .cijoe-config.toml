@@ -1,0 +1,40 @@
+[linux.deps]
+packages = [
+    "bc",
+    "bison",
+    "ccache",
+    "clang",
+    "cpio",
+    "flex",
+    "git",
+    "kmod",
+    "libelf-dev",
+    "libncurses5-dev",
+    "libssl-dev",
+    "lld",
+    "llvm",
+    "make",
+    "pahole",
+    "rsync",
+    "time",
+    "xz-utils",
+    ]
+
+[make.args]
+outputdir = "."
+toolchain = "llvm"
+arch = "arm64"
+config = [
+    "tinyconfig",
+    "kvm_guest.config",
+    "kvm_guest_extra.config",
+    "systemd.config",
+    "distro.config",
+    "gdb.config",
+    "storage.config",
+    "ebpf.config",
+    "arm64_pages.config",
+    "buffer_head.config",
+    "vm_debug.config"
+    ]
+verbose = false
