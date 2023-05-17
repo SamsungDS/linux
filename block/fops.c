@@ -400,6 +400,7 @@ static const struct iomap_ops blkdev_iomap_ops = {
 	.iomap_begin		= blkdev_iomap_begin,
 };
 
+#ifdef CONFIG_BUFFER_HEAD
 static int blkdev_get_block(struct inode *inode, sector_t iblock,
 		struct buffer_head *bh, int create)
 {
@@ -454,6 +455,7 @@ const struct address_space_operations def_blk_aops = {
 	.migrate_folio	= buffer_migrate_folio_norefs,
 	.is_dirty_writeback = buffer_check_dirty_writeback,
 };
+#endif /* CONFIG_BUFFER_HEAD */
 
 static int blkdev_read_folio_iomap(struct file *file, struct folio *folio)
 {
