@@ -400,7 +400,6 @@ static const struct iomap_ops blkdev_iomap_ops = {
 	.iomap_begin		= blkdev_iomap_begin,
 };
 
-#ifdef CONFIG_BUFFER_HEAD
 static int blkdev_get_block(struct inode *inode, sector_t iblock,
 		struct buffer_head *bh, int create)
 {
@@ -455,18 +454,18 @@ const struct address_space_operations def_blk_aops = {
 	.migrate_folio	= buffer_migrate_folio_norefs,
 	.is_dirty_writeback = buffer_check_dirty_writeback,
 };
-#else /* CONFIG_BUFFER_HEAD */
-static int blkdev_read_folio(struct file *file, struct folio *folio)
+
+static int blkdev_read_folio_iomap(struct file *file, struct folio *folio)
 {
 	return iomap_read_folio(folio, &blkdev_iomap_ops);
 }
 
-static void blkdev_readahead(struct readahead_control *rac)
+static void blkdev_readahead_iomap(struct readahead_control *rac)
 {
 	iomap_readahead(rac, &blkdev_iomap_ops);
 }
 
-static int blkdev_map_blocks(struct iomap_writepage_ctx *wpc,
+static int blkdev_map_blocks_iomap(struct iomap_writepage_ctx *wpc,
 		struct inode *inode, loff_t offset)
 {
 	loff_t isize = i_size_read(inode);
@@ -481,10 +480,10 @@ static int blkdev_map_blocks(struct iomap_writepage_ctx *wpc,
 }
 
 static const struct iomap_writeback_ops blkdev_writeback_ops = {
-	.map_blocks		= blkdev_map_blocks,
+	.map_blocks		= blkdev_map_blocks_iomap,
 };
 
-static int blkdev_writepages(struct address_space *mapping,
+static int blkdev_writepages_iomap(struct address_space *mapping,
 		struct writeback_control *wbc)
 {
 	struct iomap_writepage_ctx wpc = { };
@@ -492,18 +491,17 @@ static int blkdev_writepages(struct address_space *mapping,
 	return iomap_writepages(mapping, wbc, &wpc, &blkdev_writeback_ops);
 }
 
-const struct address_space_operations def_blk_aops = {
+const struct address_space_operations iomap_blk_aops = {
 	.dirty_folio	= filemap_dirty_folio,
 	.release_folio		= iomap_release_folio,
 	.invalidate_folio	= iomap_invalidate_folio,
-	.read_folio		= blkdev_read_folio,
-	.readahead		= blkdev_readahead,
-	.writepages		= blkdev_writepages,
+	.read_folio		= blkdev_read_folio_iomap,
+	.readahead		= blkdev_readahead_iomap,
+	.writepages		= blkdev_writepages_iomap,
 	.is_partially_uptodate  = iomap_is_partially_uptodate,
 	.error_remove_page	= generic_error_remove_page,
 	.migrate_folio		= filemap_migrate_folio,
 };
-#endif /* CONFIG_BUFFER_HEAD */
 
 /*
  * for a block special file file_inode(file)->i_size is zero

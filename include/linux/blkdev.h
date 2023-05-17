@@ -1480,6 +1480,7 @@ struct block_device *blkdev_get_no_open(dev_t dev);
 void blkdev_put_no_open(struct block_device *bdev);
 
 struct block_device *bdev_alloc(struct gendisk *disk, u8 partno);
+void bdev_set_iomap_aops(struct gendisk *disk);
 void bdev_add(struct block_device *bdev, dev_t dev);
 struct block_device *I_BDEV(struct inode *inode);
 int truncate_bdev_range(struct block_device *bdev, fmode_t mode, loff_t lstart,

@@ -1849,9 +1849,11 @@ static void nvme_update_disk_info(struct gendisk *disk,
 	 * The issues for LBA > PAGE_SIZE need to be fixed.
 	 */
 	if (ns->lba_shift > PAGE_SHIFT) {
-		if (debug_large_lbas)
+		if (debug_large_lbas) {
 			dev_warn(ns->ctrl->device,
-				 "forcibly allowing LBAS > PAGE_SIZE due to nvme_core.debug_large_lbas -- use at your own risk\n");
+				 "forcibly allowing LBAS > PAGE_SIZE with bdev iomap aops due to nvme_core.debug_large_lbas -- use at your own risk\n");
+			bdev_set_iomap_aops(disk);
+		}
 		else {
 			capacity = 0;
 			bs = (1 << 9);

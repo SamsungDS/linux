@@ -138,7 +138,7 @@ static void set_init_blocksize(struct block_device *bdev)
 int set_blocksize(struct block_device *bdev, int size)
 {
 	/* Size must be a power of two, and between 512 and PAGE_SIZE */
-	if (size > PAGE_SIZE || size < 512 || !is_power_of_2(size))
+	if (size < 512 || !is_power_of_2(size))
 		return -EINVAL;
 
 	/* Size cannot be smaller than the size supported by the device */
@@ -430,6 +430,20 @@ struct block_device *bdev_alloc(struct gendisk *disk, u8 partno)
 	bdev->bd_disk = disk;
 	return bdev;
 }
+
+void bdev_set_iomap_aops(struct gendisk *disk)
+{
+	struct block_device *bdev;
+	struct inode *inode;
+
+	if (!disk || !disk->part0)
+		return;
+
+	bdev = disk->part0;
+	inode = bdev->bd_inode;
+	inode->i_data.a_ops = &iomap_blk_aops;
+}
+EXPORT_SYMBOL_GPL(bdev_set_iomap_aops);
 
 void bdev_set_nr_sectors(struct block_device *bdev, sector_t sectors)
 {
