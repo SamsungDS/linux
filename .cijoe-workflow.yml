@@ -1,0 +1,16 @@
+---
+doc: |
+  cijoe workflow file for the Linux kernel.
+
+steps:
+- name: do_depends
+  uses: do_depends
+
+- name: do_info
+  uses: do_info
+
+- name: do_configure
+  uses: do_configure
+
+- name: do_build
+  uses: do_build

@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Copyright (c) 2023 Samsung Electronics Co., Ltd. All Rights Reserved.
+#
+# Author:
+# Daniel Gomez <da.gomez@samsung.com>
+#
+# Source this script as '. ./scripts/cijoe-init-build-env'
+# Run with 'cijoe-linux <step>'
+alias cijoe-linux='cijoe --workflow=.cijoe-workflow.yml --config=.cijoe-config.toml --output=.cijoe/output'
