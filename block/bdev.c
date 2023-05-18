@@ -411,6 +411,7 @@ struct block_device *bdev_alloc(struct gendisk *disk, u8 partno)
 	inode->i_rdev = 0;
 	inode->i_data.a_ops = &iomap_blk_aops;
 	mapping_set_gfp_mask(&inode->i_data, GFP_USER);
+	mapping_set_large_folios(inode->i_mapping);
 
 	bdev = I_BDEV(inode);
 	mutex_init(&bdev->bd_fsfreeze_mutex);

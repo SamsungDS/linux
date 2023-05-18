@@ -629,6 +629,11 @@ static ssize_t blkdev_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	size_t shorted = 0;
 	ssize_t ret;
 
+	if (bdev_physical_block_size(bdev) >= PAGE_SIZE) {
+		pr_notice_once("Forcing direct IO write for block device with blocksize > PAGE_SIZE drive\n");
+		iocb->ki_flags |= IOCB_DIRECT;
+	}
+
 	if (bdev_read_only(bdev))
 		return -EPERM;
 
@@ -681,6 +686,11 @@ static ssize_t blkdev_read_iter(struct kiocb *iocb, struct iov_iter *to)
 	size_t shorted = 0;
 	ssize_t ret = 0;
 	size_t count;
+
+	if (bdev_physical_block_size(bdev) >= PAGE_SIZE) {
+		pr_notice_once("Forcing direct IO read for block device with blocksize > PAGE_SIZE drive\n");
+		iocb->ki_flags |= IOCB_DIRECT;
+	}
 
 	if (unlikely(pos + iov_iter_count(to) > size)) {
 		if (pos >= size)
