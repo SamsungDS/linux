@@ -207,7 +207,7 @@ struct bio *__blk_queue_bounce(struct bio *bio_orig, struct request_queue *q)
 	struct bvec_iter iter;
 	unsigned i = 0, bytes = 0;
 	bool bounce = false;
-	int sectors;
+	unsigned sectors;
 
 	bio_for_each_segment(from, bio_orig, iter) {
 		if (i++ < BIO_MAX_VECS)

@@ -122,7 +122,7 @@ struct request {
 	 * with blk_rq_sectors(rq), except that it never be zeroed
 	 * by completion.
 	 */
-	unsigned short stats_sectors;
+	unsigned int stats_sectors;
 
 	/*
 	 * Number of scatter-gather DMA addr+len pairs after

@@ -50,11 +50,11 @@
  * -1: there are bad blocks which have not yet been acknowledged in metadata.
  * plus the start/length of the first bad section we overlap.
  */
-int badblocks_check(struct badblocks *bb, sector_t s, int sectors,
-			sector_t *first_bad, int *bad_sectors)
+int badblocks_check(struct badblocks *bb, sector_t s, unsigned int sectors,
+		    sector_t *first_bad, unsigned int *bad_sectors)
 {
-	int hi;
-	int lo;
+	unsigned int hi;
+	unsigned int lo;
 	u64 *p = bb->page;
 	int rv;
 	sector_t target = s + sectors;
@@ -159,11 +159,11 @@ static void badblocks_update_acked(struct badblocks *bb)
  *  0: success
  *  1: failed to set badblocks (out of space)
  */
-int badblocks_set(struct badblocks *bb, sector_t s, int sectors,
+int badblocks_set(struct badblocks *bb, sector_t s, unsigned int sectors,
 			int acknowledged)
 {
 	u64 *p;
-	int lo, hi;
+	unsigned int lo, hi;
 	int rv = 0;
 	unsigned long flags;
 
@@ -265,9 +265,9 @@ int badblocks_set(struct badblocks *bb, sector_t s, int sectors,
 		/* we might be able to combine lo and hi */
 		/* Note: 's' is at the end of 'lo' */
 		sector_t a = BB_OFFSET(p[hi]);
-		int lolen = BB_LEN(p[lo]);
-		int hilen = BB_LEN(p[hi]);
-		int newlen = lolen + hilen - (s - a);
+		unsigned int lolen = BB_LEN(p[lo]);
+		unsigned int hilen = BB_LEN(p[hi]);
+		unsigned int newlen = lolen + hilen - (s - a);
 
 		if (s >= a && newlen < BB_MAX_LEN) {
 			/* yes, we can combine them */
@@ -288,7 +288,7 @@ int badblocks_set(struct badblocks *bb, sector_t s, int sectors,
 			rv = 1;
 			break;
 		} else {
-			int this_sectors = sectors;
+			unsigned int this_sectors = sectors;
 
 			memmove(p + hi + 1, p + hi,
 				(bb->count - hi) * 8);
@@ -327,10 +327,10 @@ EXPORT_SYMBOL_GPL(badblocks_set);
  *  0: success
  *  1: failed to clear badblocks
  */
-int badblocks_clear(struct badblocks *bb, sector_t s, int sectors)
+int badblocks_clear(struct badblocks *bb, sector_t s, unsigned int sectors)
 {
 	u64 *p;
-	int lo, hi;
+	unsigned int lo, hi;
 	sector_t target = s + sectors;
 	int rv = 0;
 
@@ -353,7 +353,7 @@ int badblocks_clear(struct badblocks *bb, sector_t s, int sectors)
 	hi = bb->count;
 	/* Find the last range that starts before 'target' */
 	while (hi - lo > 1) {
-		int mid = (lo + hi) / 2;
+		unsigned int mid = (lo + hi) / 2;
 		sector_t a = BB_OFFSET(p[mid]);
 
 		if (a < target)
