@@ -247,6 +247,7 @@ struct bio {
 #if defined(CONFIG_BLK_DEV_INTEGRITY)
 		struct bio_integrity_payload *bi_integrity; /* data integrity */
 #endif
+		struct bio_copy_ctx *bi_copy_ctx;
 	};
 
 	unsigned short		bi_vcnt;	/* how many bio_vec's */
@@ -342,6 +343,10 @@ enum req_op {
 	/* reset all the zone present on the device */
 	REQ_OP_ZONE_RESET_ALL	= (__force blk_opf_t)15,
 
+	/* copy offload source and destination operations */
+	REQ_OP_COPY_SRC		= (__force blk_opf_t)18,
+	REQ_OP_COPY_DST		= (__force blk_opf_t)19,
+
 	/* Driver private requests */
 	REQ_OP_DRV_IN		= (__force blk_opf_t)34,
 	REQ_OP_DRV_OUT		= (__force blk_opf_t)35,
@@ -428,6 +433,17 @@ static inline enum req_op bio_op(const struct bio *bio)
 static inline bool op_is_write(blk_opf_t op)
 {
 	return !!(op & (__force blk_opf_t)1);
+}
+
+static inline bool op_is_copy(blk_opf_t op)
+{
+	switch (op & REQ_OP_MASK) {
+	case REQ_OP_COPY_DST:
+	case REQ_OP_COPY_SRC:
+		return true;
+	default:
+		return false;
+	}
 }
 
 /*

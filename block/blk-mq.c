@@ -2914,6 +2914,80 @@ static void blk_mq_use_cached_rq(struct request *rq, struct blk_plug *plug,
 	INIT_LIST_HEAD(&rq->queuelist);
 }
 
+/*
+ * Copy offload sends a pair of bio with REQ_OP_COPY_DST and REQ_OP_COPY_SRC
+ * operation by taking a plug.
+ * Initially DST bio is sent which forms a request and
+ * waits for SRC bio to arrive. Once SRC bio arrives
+ * we combine it and send request down to driver.
+ */
+static inline bool blk_copy_offload_combine_ok(struct request *req,
+					      struct bio *bio)
+{
+	return (req_op(req) == REQ_OP_COPY_DST &&
+		bio_op(bio) == REQ_OP_COPY_SRC);
+}
+
+static bool blk_copy_offload_combine(struct request *req,
+							    struct bio *bio)
+{
+	if (!blk_copy_offload_combine_ok(req, bio))
+		return false;
+
+	if (req->__data_len != bio->bi_iter.bi_size)
+		return false;
+
+	req->biotail->bi_next = bio;
+	req->biotail = bio;
+	req->nr_phys_segments++;
+	req->__data_len += bio->bi_iter.bi_size;
+
+	return true;
+}
+
+static struct request *blk_copy_offload_prep(struct request_queue *q,
+					       struct blk_plug *plug,
+					       struct bio *bio,
+					       unsigned int nsegs)
+{
+	struct request *rq = NULL;
+	struct bio *dst_bio, *src_bio;
+
+	if (bio->bi_copy_ctx->status)
+		goto err_request;
+
+	if (!bio->bi_copy_ctx->first_bio) {
+		bio->bi_copy_ctx->first_bio = bio;
+		return NULL;
+	}
+
+	if ((bio->bi_opf & REQ_OP_MASK) == REQ_OP_COPY_DST)
+		dst_bio = bio;
+	else
+		src_bio = bio;
+
+	if ((bio->bi_copy_ctx->first_bio->bi_opf & REQ_OP_MASK) == REQ_OP_COPY_DST)
+		dst_bio = bio->bi_copy_ctx->first_bio;
+	else
+		src_bio = bio->bi_copy_ctx->first_bio;
+
+	if (bio->bi_bdev == bio->bi_copy_ctx->first_bio->bi_bdev) {
+		rq = blk_mq_get_new_requests(q, plug, dst_bio, nsegs);
+		if (unlikely(!rq))
+			goto err_request;
+		blk_mq_bio_to_request(rq, dst_bio, nsegs);
+		if (blk_copy_offload_combine(rq, src_bio))
+			return rq;
+	}
+
+err_request:
+	bio->bi_status = BLK_STS_IOERR;
+	bio_endio(bio);
+	if (rq)
+		blk_mq_free_request(rq);
+	return NULL;
+}
+
 /**
  * blk_mq_submit_bio - Create and send a request to block device.
  * @bio: Bio pointer.
@@ -2977,6 +3051,14 @@ void blk_mq_submit_bio(struct bio *bio)
 	if (blk_mq_attempt_bio_merge(q, bio, nr_segs))
 		goto queue_exit;
 
+	if (op_is_copy(bio->bi_opf)) {
+		rq = blk_copy_offload_prep(q, plug, bio, nr_segs);
+		if (rq)
+			goto skip_request_init;
+		else
+			goto queue_exit;
+	}
+
 	if (blk_queue_is_zoned(q) && blk_zone_plug_bio(bio, nr_segs))
 		goto queue_exit;
 
@@ -2995,6 +3077,7 @@ new_request:
 
 	blk_mq_bio_to_request(rq, bio, nr_segs);
 
+skip_request_init:
 	ret = blk_crypto_rq_get_keyslot(rq);
 	if (ret != BLK_STS_OK) {
 		bio->bi_status = ret;

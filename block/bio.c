@@ -828,6 +828,7 @@ static int __bio_clone(struct bio *bio, struct bio *bio_src, gfp_t gfp)
 	bio->bi_ioprio = bio_src->bi_ioprio;
 	bio->bi_write_hint = bio_src->bi_write_hint;
 	bio->bi_iter = bio_src->bi_iter;
+	bio->bi_copy_ctx = bio_src->bi_copy_ctx;
 
 	if (bio->bi_bdev) {
 		if (bio->bi_bdev == bio_src->bi_bdev &&
@@ -1603,6 +1604,8 @@ static inline bool bio_remaining_done(struct bio *bio)
 void bio_endio(struct bio *bio)
 {
 again:
+	bio_copy_offload_endio(bio);
+
 	if (!bio_remaining_done(bio))
 		return;
 	if (!bio_integrity_endio(bio))

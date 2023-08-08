@@ -267,6 +267,28 @@ static inline void bio_integrity_free(struct bio *bio)
 }
 #endif /* CONFIG_BLK_DEV_INTEGRITY */
 
+static inline void bio_copy_offload_endio(struct bio *bio)
+{
+	struct bio *temp;
+
+	if (op_is_copy(bio->bi_opf)) {
+		if (!bio->bi_copy_ctx)
+			return;
+
+		if (bio->bi_status)
+			bio->bi_copy_ctx->status = bio->bi_status;
+
+		if (bio->bi_copy_ctx->first_bio && (bio != bio->bi_copy_ctx->first_bio)) {
+			temp = bio->bi_copy_ctx->first_bio;
+			if (bio->bi_status && !temp->bi_status) {
+				bio->bi_copy_ctx->first_bio = NULL;
+				temp->bi_status = bio->bi_status;
+				bio_endio(temp);
+			}
+		}
+	}
+}
+
 unsigned long blk_rq_timeout(unsigned long timeout);
 void blk_add_timer(struct request *req);
 
@@ -323,6 +345,8 @@ static inline bool bio_may_exceed_limits(struct bio *bio,
 	case REQ_OP_DISCARD:
 	case REQ_OP_SECURE_ERASE:
 	case REQ_OP_WRITE_ZEROES:
+	case REQ_OP_COPY_SRC:
+	case REQ_OP_COPY_DST:
 		return true; /* non-trivial splitting decisions */
 	default:
 		break;
