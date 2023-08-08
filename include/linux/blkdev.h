@@ -1290,6 +1290,8 @@ static inline unsigned int bdev_discard_granularity(struct block_device *bdev)
  * to make sure userspace doesn't consure all the kernel resources.
  */
 #define BLK_COPY_MAX_BYTES		(1 << 27)
+#define BLK_COPY_MAX_SEGMENTS		2
+#define BLK_COPY_DST_BIO_INDEX		1
 
 static inline unsigned int bdev_max_copy_sectors(struct block_device *bdev)
 {
