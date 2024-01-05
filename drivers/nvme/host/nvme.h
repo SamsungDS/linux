@@ -440,6 +440,8 @@ struct nvme_ns_ids {
 	u8	csi;
 };
 
+#define NVME_MAX_WRITE_HINTS   (8)
+
 /*
  * Anchor structure for namespaces.  There is one for each namespace in a
  * NVMe subsystem that any of our controllers can see, and the namespace
@@ -466,6 +468,8 @@ struct nvme_ns_head {
 	u8			guard_type;
 	u16			sgs;
 	u32			sws;
+	u16			nr_plids;
+	u16			plids[NVME_MAX_WRITE_HINTS];
 #ifdef CONFIG_BLK_DEV_ZONED
 	u64			zsze;
 #endif

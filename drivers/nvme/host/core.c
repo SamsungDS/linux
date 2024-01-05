@@ -42,6 +42,20 @@ struct nvme_ns_info {
 	bool is_removed;
 };
 
+struct nvme_fdp_ruh_status_desc {
+	u16 pid;
+	u16 ruhid;
+	u32 earutr;
+	u64 ruamw;
+	u8  rsvd16[16];
+};
+
+struct nvme_fdp_ruh_status {
+	u8  rsvd0[14];
+	u16 nruhsd;
+	struct nvme_fdp_ruh_status_desc ruhss[];
+};
+
 unsigned int admin_timeout = 60;
 module_param(admin_timeout, uint, 0644);
 MODULE_PARM_DESC(admin_timeout, "timeout in seconds for admin commands");
@@ -88,6 +102,10 @@ static unsigned long apst_secondary_latency_tol_us = 100000;
 module_param(apst_secondary_latency_tol_us, ulong, 0644);
 MODULE_PARM_DESC(apst_secondary_latency_tol_us,
 	"secondary APST latency tolerance in us");
+
+static bool fdp_disable;
+module_param(fdp_disable, bool, 0644);
+MODULE_PARM_DESC(fdp_disable, "disable fdp");
 
 /*
  * nvme_wq - hosts nvme related works that are not reset or delete
@@ -896,6 +914,18 @@ static inline blk_status_t nvme_setup_write_zeroes(struct nvme_ns *ns,
 	return BLK_STS_OK;
 }
 
+static inline void nvme_assign_placement_id(struct nvme_ns *ns,
+					struct request *req,
+					u16 *control, u32 *dsmgmt)
+{
+	enum rw_hint hint = req->write_hint;
+
+	if (hint < ns->head->nr_plids) {
+		*control |= NVME_RW_DTYPE_DPLCMT;
+		*dsmgmt |= ns->head->plids[hint] << 16;
+	}
+}
+
 static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 		struct request *req, struct nvme_command *cmnd,
 		enum nvme_opcode op)
@@ -952,6 +982,9 @@ static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 			break;
 		}
 	}
+
+	if (req_op(req) == REQ_OP_WRITE && ns->head->nr_plids)
+		nvme_assign_placement_id(ns, req, &control, &dsmgmt);
 
 	cmnd->rw.control = cpu_to_le16(control);
 	cmnd->rw.dsmgmt = cpu_to_le32(dsmgmt);
@@ -2041,6 +2074,41 @@ static int nvme_update_ns_info_generic(struct nvme_ns *ns,
 	return 0;
 }
 
+static int nvme_configure_fdp(struct nvme_ns *ns, u32 nsid)
+{
+	struct nvme_fdp_ruh_status *ruhs;
+	struct nvme_fdp_ruh_status_desc *ruhsd;
+	int size, ret, i;
+	struct nvme_command c = {};
+
+	size = sizeof(*ruhs) +
+		NVME_MAX_WRITE_HINTS * sizeof(struct nvme_fdp_ruh_status_desc);
+	ruhs = kzalloc(size, GFP_KERNEL);
+	if (!ruhs)
+		return -ENOMEM;
+
+	c.imr.opcode = nvme_cmd_io_mgmt_recv;
+	c.imr.nsid = cpu_to_le32(nsid);
+	c.imr.mo = 0x1;
+	c.imr.numd =  cpu_to_le32((size >> 2) - 1);
+
+	ret = nvme_submit_sync_cmd(ns->queue, &c, ruhs, size);
+	if (ret)
+		goto out;
+
+	ns->head->nr_plids = le16_to_cpu(ruhs->nruhsd);
+	ns->head->nr_plids =
+		min_t(u16, ns->head->nr_plids, NVME_MAX_WRITE_HINTS);
+
+	for (i = 0; i < ns->head->nr_plids; i++) {
+		ruhsd = &ruhs->ruhss[i];
+		ns->head->plids[i] = le16_to_cpu(ruhsd->pid);
+	}
+out:
+	kfree(ruhs);
+	return ret;
+}
+
 static int nvme_update_ns_info_block(struct nvme_ns *ns,
 		struct nvme_ns_info *info)
 {
@@ -2108,6 +2176,13 @@ static int nvme_update_ns_info_block(struct nvme_ns *ns,
 				 &ns->queue->limits, 0);
 		disk_update_readahead(ns->head->disk);
 		blk_mq_unfreeze_queue(ns->head->disk->queue);
+	}
+
+	if (!fdp_disable) {
+		ret = nvme_configure_fdp(ns, info->nsid);
+		if (ret)
+			dev_warn(ns->ctrl->device,
+				"FDP configure failure status:0x%x\n", ret);
 	}
 
 	ret = 0;
