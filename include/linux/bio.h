@@ -332,6 +332,12 @@ enum bip_flags {
 	BIP_CLONED		= 1 << 7, /* Indicates that bip is cloned */
 };
 
+struct uio_meta {
+	u16 flags;
+	u16 apptag;
+	struct iov_iter iter;
+};
+
 /*
  * bio integrity payload
  */
