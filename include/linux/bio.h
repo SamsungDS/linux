@@ -329,6 +329,7 @@ enum bip_flags {
 	BIP_IP_CHECKSUM		= 1 << 4, /* IP checksum */
 	BIP_INTEGRITY_USER	= 1 << 5, /* Integrity payload is user address */
 	BIP_COPY_USER		= 1 << 6, /* Kernel bounce buffer in use */
+	BIP_CLONED		= 1 << 7, /* Indicates that bip is cloned */
 };
 
 /*
