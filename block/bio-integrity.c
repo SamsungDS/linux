@@ -147,7 +147,8 @@ void bio_integrity_free(struct bio *bio)
 	struct bio_integrity_payload *bip = bio_integrity(bio);
 	struct bio_set *bs = bio->bi_pool;
 
-	if (bip->bip_flags & BIP_INTEGRITY_USER)
+	if (bip->bip_flags & BIP_INTEGRITY_USER &&
+	    !(bip->bip_flags & BIP_CLONED))
 		return;
 	if (bip->bip_flags & BIP_BLOCK_INTEGRITY)
 		kfree(bvec_virt(bip->bip_vec));
@@ -662,6 +663,8 @@ int bio_integrity_clone(struct bio *bio, struct bio *bio_src,
 	bip->bip_iter = bip_src->bip_iter;
 	bip->bip_flags = bip_src->bip_flags & ~(BIP_BLOCK_INTEGRITY |
 						BIP_COPY_USER);
+	bip->bip_flags |= BIP_CLONED;
+
 	return 0;
 }
 
