@@ -870,6 +870,13 @@ static blk_status_t nvme_setup_discard(struct nvme_ns *ns, struct request *req,
 	return BLK_STS_OK;
 }
 
+static void nvme_set_app_tag(struct nvme_command *cmnd, u16 apptag)
+{
+	cmnd->rw.apptag = cpu_to_le16(apptag);
+	/* use 0xfff as mask so that apptag is used in entirety*/
+	cmnd->rw.appmask = cpu_to_le16(0xffff);
+}
+
 static void nvme_set_ref_tag(struct nvme_ns *ns, struct nvme_command *cmnd,
 			      struct request *req)
 {
@@ -927,6 +934,55 @@ static inline blk_status_t nvme_setup_write_zeroes(struct nvme_ns *ns,
 	return BLK_STS_OK;
 }
 
+static blk_status_t nvme_setup_rw_meta(struct nvme_ns *ns, struct request *req,
+				      struct nvme_command *cmnd, u16 *control,
+				      enum nvme_opcode op)
+{
+	struct bio_integrity_payload *bip = bio_integrity(req->bio);
+
+	if (!bip || !(bip->bip_flags & BIP_INTEGRITY_USER)) {
+		/*
+		 * If formated with metadata, the block layer always provides a
+		 * metadata buffer if CONFIG_BLK_DEV_INTEGRITY is enabled.  Else
+		 * we enable the PRACT bit for protection information or set the
+		 * namespace capacity to zero to prevent any I/O.
+		 */
+		if (!blk_integrity_rq(req)) {
+			if (WARN_ON_ONCE(!nvme_ns_has_pi(ns->head)))
+				return BLK_STS_NOTSUPP;
+			*control |= NVME_RW_PRINFO_PRACT;
+		}
+
+		switch (ns->head->pi_type) {
+		case NVME_NS_DPS_PI_TYPE3:
+			*control |= NVME_RW_PRINFO_PRCHK_GUARD;
+			break;
+		case NVME_NS_DPS_PI_TYPE1:
+		case NVME_NS_DPS_PI_TYPE2:
+			*control |= NVME_RW_PRINFO_PRCHK_GUARD |
+					NVME_RW_PRINFO_PRCHK_REF;
+			if (op == nvme_cmd_zone_append)
+				*control |= NVME_RW_APPEND_PIREMAP;
+			nvme_set_ref_tag(ns, cmnd, req);
+			break;
+		}
+	} else {
+		unsigned short bip_flags = bip->bip_flags;
+
+		if (bip_flags & BIP_USER_CHK_GUARD)
+			*control |= NVME_RW_PRINFO_PRCHK_GUARD;
+		if (bip_flags & BIP_USER_CHK_REFTAG) {
+			*control |= NVME_RW_PRINFO_PRCHK_REF;
+			nvme_set_ref_tag(ns, cmnd, req);
+		}
+		if (bip_flags & BIP_USER_CHK_APPTAG) {
+			*control |= NVME_RW_PRINFO_PRCHK_APP;
+			nvme_set_app_tag(cmnd, bip->apptag);
+		}
+	}
+	return 0;
+}
+
 /*
  * NVMe does not support a dedicated command to issue an atomic write. A write
  * which does adhere to the device atomic limits will silently be executed
@@ -963,6 +1019,7 @@ static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 {
 	u16 control = 0;
 	u32 dsmgmt = 0;
+	blk_status_t ret;
 
 	if (req->cmd_flags & REQ_FUA)
 		control |= NVME_RW_FUA;
@@ -990,31 +1047,9 @@ static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 	cmnd->rw.appmask = 0;
 
 	if (ns->head->ms) {
-		/*
-		 * If formated with metadata, the block layer always provides a
-		 * metadata buffer if CONFIG_BLK_DEV_INTEGRITY is enabled.  Else
-		 * we enable the PRACT bit for protection information or set the
-		 * namespace capacity to zero to prevent any I/O.
-		 */
-		if (!blk_integrity_rq(req)) {
-			if (WARN_ON_ONCE(!nvme_ns_has_pi(ns->head)))
-				return BLK_STS_NOTSUPP;
-			control |= NVME_RW_PRINFO_PRACT;
-		}
-
-		switch (ns->head->pi_type) {
-		case NVME_NS_DPS_PI_TYPE3:
-			control |= NVME_RW_PRINFO_PRCHK_GUARD;
-			break;
-		case NVME_NS_DPS_PI_TYPE1:
-		case NVME_NS_DPS_PI_TYPE2:
-			control |= NVME_RW_PRINFO_PRCHK_GUARD |
-					NVME_RW_PRINFO_PRCHK_REF;
-			if (op == nvme_cmd_zone_append)
-				control |= NVME_RW_APPEND_PIREMAP;
-			nvme_set_ref_tag(ns, cmnd, req);
-			break;
-		}
+		ret = nvme_setup_rw_meta(ns, req, cmnd, &control, op);
+		if (unlikely(ret))
+			return ret;
 	}
 
 	cmnd->rw.control = cpu_to_le16(control);
