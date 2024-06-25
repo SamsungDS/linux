@@ -12,6 +12,7 @@
 #include <linux/bio.h>
 #include <linux/workqueue.h>
 #include <linux/slab.h>
+#include <uapi/linux/io_uring.h>
 #include "blk.h"
 
 static struct kmem_cache *bip_slab;
@@ -335,6 +336,49 @@ static unsigned int bvec_from_pages(struct bio_vec *bvec, struct page **pages,
 	}
 
 	return nr_bvecs;
+}
+
+static void bio_uio_meta_to_bip(struct bio *bio, struct uio_meta *meta)
+{
+	struct bio_integrity_payload *bip = bio_integrity(bio);
+	u16 bip_flags = 0;
+
+	if (meta->flags & INTEGRITY_CHK_GUARD)
+		bip_flags |= BIP_USER_CHK_GUARD;
+	if (meta->flags & INTEGRITY_CHK_APPTAG)
+		bip_flags |= BIP_USER_CHK_APPTAG;
+	if (meta->flags & INTEGRITY_CHK_REFTAG)
+		bip_flags |= BIP_USER_CHK_REFTAG;
+
+	bip->bip_flags |= bip_flags;
+	bip->apptag = meta->apptag;
+}
+
+int bio_integrity_map_iter(struct bio *bio, struct uio_meta *meta)
+{
+	struct blk_integrity *bi = blk_get_integrity(bio->bi_bdev->bd_disk);
+	unsigned int integrity_bytes;
+	int ret;
+	struct iov_iter it;
+
+	if (!bi)
+		return -EINVAL;
+	/*
+	 * original meta iterator can be bigger.
+	 * process integrity info corresponding to current data buffer only.
+	 */
+	it = meta->iter;
+	integrity_bytes = bio_integrity_bytes(bi, bio_sectors(bio));
+	if (it.count < integrity_bytes)
+		return -EINVAL;
+
+	it.count = integrity_bytes;
+	ret = bio_integrity_map_user(bio, &it, 0);
+	if (!ret) {
+		bio_uio_meta_to_bip(bio, meta);
+		iov_iter_advance(&meta->iter, integrity_bytes);
+	}
+	return ret;
 }
 
 int bio_integrity_map_user(struct bio *bio, struct iov_iter *iter,

@@ -126,12 +126,13 @@ static void blkdev_bio_end_io(struct bio *bio)
 {
 	struct blkdev_dio *dio = bio->bi_private;
 	bool should_dirty = dio->flags & DIO_SHOULD_DIRTY;
+	bool is_async = !(dio->flags & DIO_IS_SYNC);
 
 	if (bio->bi_status && !dio->bio.bi_status)
 		dio->bio.bi_status = bio->bi_status;
 
 	if (atomic_dec_and_test(&dio->ref)) {
-		if (!(dio->flags & DIO_IS_SYNC)) {
+		if (is_async) {
 			struct kiocb *iocb = dio->iocb;
 			ssize_t ret;
 
@@ -153,6 +154,9 @@ static void blkdev_bio_end_io(struct bio *bio)
 			blk_wake_io_task(waiter);
 		}
 	}
+
+	if (is_async && (dio->iocb->ki_flags & IOCB_HAS_META))
+		bio_integrity_unmap_free_user(bio);
 
 	if (should_dirty) {
 		bio_check_pages_dirty(bio);
@@ -231,6 +235,16 @@ static ssize_t __blkdev_direct_IO(struct kiocb *iocb, struct iov_iter *iter,
 			}
 			bio->bi_opf |= REQ_NOWAIT;
 		}
+		if (!is_sync && unlikely(iocb->ki_flags & IOCB_HAS_META)) {
+			ret = bio_integrity_map_iter(bio, iocb->private);
+			if (unlikely(ret)) {
+				bio_release_pages(bio, false);
+				bio_clear_flag(bio, BIO_REFFED);
+				bio_put(bio);
+				blk_finish_plug(&plug);
+				return ret;
+			}
+		}
 
 		if (is_read) {
 			if (dio->flags & DIO_SHOULD_DIRTY)
@@ -287,6 +301,9 @@ static void blkdev_bio_end_io_async(struct bio *bio)
 	} else {
 		ret = blk_status_to_errno(bio->bi_status);
 	}
+
+	if (unlikely(iocb->ki_flags & IOCB_HAS_META))
+		bio_integrity_unmap_free_user(bio);
 
 	iocb->ki_complete(iocb, ret);
 
@@ -346,6 +363,15 @@ static ssize_t __blkdev_direct_IO_async(struct kiocb *iocb,
 		}
 	} else {
 		task_io_account_write(bio->bi_iter.bi_size);
+	}
+
+	if (unlikely(iocb->ki_flags & IOCB_HAS_META)) {
+		ret = bio_integrity_map_iter(bio, iocb->private);
+		WRITE_ONCE(iocb->private, NULL);
+		if (unlikely(ret)) {
+			bio_put(bio);
+			return ret;
+		}
 	}
 
 	if (iocb->ki_flags & IOCB_ATOMIC)
