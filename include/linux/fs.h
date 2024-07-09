@@ -370,6 +370,7 @@ struct kiocb {
 	void			*private;
 	int			ki_flags;
 	u16			ki_ioprio; /* See linux/ioprio.h */
+	u16			ki_write_hint;
 	union {
 		/*
 		 * Only used for async buffered reads, where it denotes the
@@ -1077,6 +1078,11 @@ extern void send_sigio(struct fown_struct *fown, int fd, int band);
 static inline struct inode *file_inode(const struct file *f)
 {
 	return f->f_inode;
+}
+
+static inline enum rw_hint file_write_hint(struct file *file)
+{
+	return file_inode(file)->i_write_hint;
 }
 
 /*
@@ -2282,6 +2288,7 @@ static inline void init_sync_kiocb(struct kiocb *kiocb, struct file *filp)
 		.ki_filp = filp,
 		.ki_flags = filp->f_iocb_flags,
 		.ki_ioprio = get_current_ioprio(),
+		.ki_write_hint = file_write_hint(filp),
 	};
 }
 

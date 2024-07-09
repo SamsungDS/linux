@@ -270,6 +270,13 @@ static int io_prep_rw(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 	}
 	rw->kiocb.dio_complete = NULL;
 
+	if (ddir == ITER_SOURCE) {
+		u16 write_hint = READ_ONCE(sqe->write_hint);
+		if (!write_hint)
+			write_hint = file_write_hint(req->file);
+		rw->kiocb.ki_write_hint = write_hint;
+	}
+
 	rw->addr = READ_ONCE(sqe->addr);
 	rw->len = READ_ONCE(sqe->len);
 	rw->flags = READ_ONCE(sqe->rw_flags);
