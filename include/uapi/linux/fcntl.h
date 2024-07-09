@@ -68,6 +68,8 @@
 #define RWH_WRITE_LIFE_MEDIUM	3
 #define RWH_WRITE_LIFE_LONG	4
 #define RWH_WRITE_LIFE_EXTREME	5
+/* not a valid write-hint; just for sanity check */
+#define RWH_WRITE_LIFE_LAST	(RWH_WRITE_LIFE_EXTREME + 1)
 
 /*
  * The originally introduced spelling is remained from the first

@@ -93,8 +93,9 @@ struct io_uring_sqe {
 			__u16	__pad3[1];
 		};
 		struct {
-			__u16	write_hint;
-			__u16	__pad4[1];
+			__u16	whint;
+			__u8	whint_type;
+			__u8	__pad4;
 		};
 	};
 	union {
@@ -109,6 +110,10 @@ struct io_uring_sqe {
 		 */
 		__u8	cmd[0];
 	};
+};
+
+enum whint_type {
+	TYPE_WRITE_LIFE_HINT = 1,
 };
 
 /*

@@ -247,6 +247,16 @@ static int io_prep_rw_setup(struct io_kiocb *req, int ddir, bool do_import)
 	return 0;
 }
 
+static inline bool io_whint_valid(u8 whint_type, u16 whint)
+{
+	bool ret = false;
+
+	if (whint_type) {
+		ret = rw_hint_valid(whint);
+	}
+	return ret;
+}
+
 static int io_prep_rw(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 		      int ddir, bool do_import)
 {
@@ -271,10 +281,16 @@ static int io_prep_rw(struct io_kiocb *req, const struct io_uring_sqe *sqe,
 	rw->kiocb.dio_complete = NULL;
 
 	if (ddir == ITER_SOURCE) {
-		u16 write_hint = READ_ONCE(sqe->write_hint);
-		if (!write_hint)
-			write_hint = file_write_hint(req->file);
-		rw->kiocb.ki_write_hint = write_hint;
+		u8 whint_type = READ_ONCE(sqe->whint_type);
+
+		rw->kiocb.ki_write_hint = RWH_WRITE_LIFE_LAST;
+		if (whint_type) {
+			u16 whint = READ_ONCE(sqe->whint);
+
+			if (!io_whint_valid(whint_type, whint))
+				return -EINVAL;
+			rw->kiocb.ki_write_hint = whint;
+		}
 	}
 
 	rw->addr = READ_ONCE(sqe->addr);
@@ -1023,6 +1039,10 @@ int io_write(struct io_kiocb *req, unsigned int issue_flags)
 	if (unlikely(ret))
 		return ret;
 	req->cqe.res = iov_iter_count(&io->iter);
+
+	/* in absence of per-io hint, pick per-inode hint value */
+	if (rw->kiocb.ki_write_hint == RWH_WRITE_LIFE_LAST)
+		rw->kiocb.ki_write_hint = file_write_hint(rw->kiocb.ki_filp);
 
 	if (force_nonblock) {
 		/* If the file doesn't support async, just async punt */
