@@ -105,7 +105,39 @@ struct io_uring_sqe {
 		 */
 		__u8	cmd[0];
 	};
+	/*
+	 * If the ring is initialized with IORING_SETUP_SQE128, then
+	 * this field is starting offset for 64 bytes of data. For meta io
+	 * this contains 'struct io_uring_meta'
+	 */
+	__u8	big_sqe_cmd[0];
 };
+
+enum io_uring_sqe_meta_type_bits {
+	META_TYPE_INTEGRITY_BIT,
+	/* not a real meta type; just to make sure that we don't overflow */
+	META_TYPE_LAST_BIT,
+};
+
+/* meta type flags */
+#define META_TYPE_INTEGRITY	(1U << META_TYPE_INTEGRITY_BIT)
+
+/* this goes to SQE128 */
+struct io_uring_meta {
+	__u16		meta_type;
+	__u16		meta_flags;
+	__u32		meta_len;
+	__u64		meta_addr;
+	__u16		app_tag;
+	__u8		pad[46];
+};
+
+/*
+ * flags for integrity meta
+ */
+#define INTEGRITY_CHK_GUARD	(1U << 0) /* enforce guard check */
+#define INTEGRITY_CHK_APPTAG	(1U << 1) /* enforce app tag check */
+#define INTEGRITY_CHK_REFTAG	(1U << 2) /* enforce ref tag check */
 
 /*
  * If sqe->file_index is set to this for opcodes that instantiate a new
