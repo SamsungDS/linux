@@ -92,6 +92,10 @@ struct io_uring_sqe {
 			__u16	addr_len;
 			__u16	__pad3[1];
 		};
+		struct {
+			__u16	meta_type;
+			__u16	__pad4[1];
+		};
 	};
 	union {
 		struct {
@@ -105,6 +109,31 @@ struct io_uring_sqe {
 		 */
 		__u8	cmd[0];
 	};
+	/*
+	 * If the ring is initialized with IORING_SETUP_SQE128, then
+	 * this field is starting offset for 64 bytes of data. For meta io
+	 * this contains 'struct io_uring_meta_pi'
+	 */
+	__u8	big_sqe[0];
+};
+
+enum io_uring_sqe_meta_type_bits {
+	META_TYPE_PI_BIT,
+	/* not a real meta type; just to make sure that we don't overflow */
+	META_TYPE_LAST_BIT,
+};
+
+/* meta type flags */
+#define META_TYPE_PI	(1U << META_TYPE_PI_BIT)
+
+/* this goes to SQE128 */
+struct io_uring_meta_pi {
+	__u16		pi_flags;
+	__u16		app_tag;
+	__u32		len;
+	__u64		addr;
+	__u64		seed;
+	__u64		rsvd;
 };
 
 /*
