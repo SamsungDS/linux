@@ -14,6 +14,9 @@ enum bip_flags {
 	BIP_CHECK_GUARD		= 1 << 6,
 	BIP_CHECK_REFTAG	= 1 << 7,
 	BIP_CHECK_APPTAG	= 1 << 8,
+	BIP_INTEGRITY_USER      = 1 << 9, /* Integrity payload is user
+					   * address
+					   */
 };
 
 struct bio_integrity_payload {
@@ -24,6 +27,7 @@ struct bio_integrity_payload {
 	unsigned short		bip_vcnt;	/* # of integrity bio_vecs */
 	unsigned short		bip_max_vcnt;	/* integrity bio_vec slots */
 	unsigned short		bip_flags;	/* control flags */
+	u16			app_tag;
 
 	struct bvec_iter	bio_iter;	/* for rewinding parent bio */
 
@@ -44,7 +48,8 @@ struct uio_meta {
 
 #define BIP_CLONE_FLAGS (BIP_MAPPED_INTEGRITY | BIP_CTRL_NOCHECK | \
 			 BIP_DISK_NOCHECK | BIP_IP_CHECKSUM | \
-			 BIP_CHECK_GUARD | BIP_CHECK_REFTAG | BIP_CHECK_APPTAG)
+			 BIP_CHECK_GUARD | BIP_CHECK_REFTAG | \
+			 BIP_CHECK_APPTAG | BIP_INTEGRITY_USER)
 
 #ifdef CONFIG_BLK_DEV_INTEGRITY
 
@@ -89,6 +94,7 @@ struct bio_integrity_payload *bio_integrity_alloc(struct bio *bio, gfp_t gfp,
 int bio_integrity_add_page(struct bio *bio, struct page *page, unsigned int len,
 		unsigned int offset);
 int bio_integrity_map_user(struct bio *bio, struct iov_iter *iter, u32 seed);
+int bio_integrity_map_iter(struct bio *bio, struct uio_meta *meta);
 void bio_integrity_unmap_user(struct bio *bio);
 bool bio_integrity_prep(struct bio *bio);
 void bio_integrity_advance(struct bio *bio, unsigned int bytes_done);
@@ -116,6 +122,11 @@ static inline void bioset_integrity_free(struct bio_set *bs)
 
 static inline int bio_integrity_map_user(struct bio *bio, struct iov_iter *iter,
 					u32 seed)
+{
+	return -EINVAL;
+}
+
+static inline int bio_integrity_map_iter(struct bio *bio, struct uio_meta *meta)
 {
 	return -EINVAL;
 }
