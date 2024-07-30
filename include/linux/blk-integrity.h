@@ -76,6 +76,15 @@ static inline unsigned int bio_integrity_bytes(struct blk_integrity *bi,
 	return bio_integrity_intervals(bi, sectors) * bi->tuple_size;
 }
 
+/*
+ * Return the integrity bytes corresponding to data iter
+ */
+static inline unsigned int bio_iter_integrity_bytes(struct blk_integrity *bi,
+						    struct bvec_iter iter)
+{
+	return bio_integrity_bytes(bi, bvec_iter_sectors(iter));
+}
+
 static inline bool blk_integrity_rq(struct request *rq)
 {
 	return rq->cmd_flags & REQ_INTEGRITY;
@@ -132,6 +141,13 @@ static inline unsigned int bio_integrity_bytes(struct blk_integrity *bi,
 {
 	return 0;
 }
+
+static inline unsigned int bio_iter_integrity_bytes(struct blk_integrity *bi,
+						    struct bvec_iter iter)
+{
+	return 0;
+}
+
 static inline int blk_integrity_rq(struct request *rq)
 {
 	return 0;
