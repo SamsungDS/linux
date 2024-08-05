@@ -802,6 +802,23 @@ static unsigned int sd_prot_flag_mask(unsigned int prot_op)
 	return flag_mask[prot_op];
 }
 
+/*
+ * Can't check reftag alone or apptag alone
+ */
+static bool sd_prot_flags_valid(struct scsi_cmnd *scmd)
+{
+	struct request *rq = scsi_cmd_to_rq(scmd);
+	struct bio *bio = rq->bio;
+
+	if (bio_integrity_flagged(bio, BIP_CHECK_REFTAG) &&
+	    !bio_integrity_flagged(bio, BIP_CHECK_APPTAG))
+		return false;
+	if (!bio_integrity_flagged(bio, BIP_CHECK_REFTAG) &&
+	    bio_integrity_flagged(bio, BIP_CHECK_APPTAG))
+		return false;
+	return true;
+}
+
 static unsigned char sd_setup_protect_cmnd(struct scsi_cmnd *scmd,
 					   unsigned int dix, unsigned int dif)
 {
@@ -814,14 +831,16 @@ static unsigned char sd_setup_protect_cmnd(struct scsi_cmnd *scmd,
 		if (bio_integrity_flagged(bio, BIP_IP_CHECKSUM))
 			scmd->prot_flags |= SCSI_PROT_IP_CHECKSUM;
 
-		if (bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false)
+		if (bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false &&
+		    (bio_integrity_flagged(bio, BIP_CHECK_GUARD)))
 			scmd->prot_flags |= SCSI_PROT_GUARD_CHECK;
 	}
 
 	if (dif != T10_PI_TYPE3_PROTECTION) {	/* DIX/DIF Type 0, 1, 2 */
 		scmd->prot_flags |= SCSI_PROT_REF_INCREMENT;
 
-		if (bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false)
+		if ((bio_integrity_flagged(bio, BIP_CTRL_NOCHECK) == false) &&
+		    (!dix || bio_integrity_flagged(bio, BIP_CHECK_REFTAG)))
 			scmd->prot_flags |= SCSI_PROT_REF_CHECK;
 	}
 
@@ -1373,6 +1392,8 @@ static blk_status_t sd_setup_read_write_cmnd(struct scsi_cmnd *cmd)
 	dif = scsi_host_dif_capable(cmd->device->host, sdkp->protection_type);
 	dld = sd_cdl_dld(sdkp, cmd);
 
+	if (!sd_prot_flags_valid(cmd))
+		goto fail;
 	if (dif || dix)
 		protect = sd_setup_protect_cmnd(cmd, dix, dif);
 	else
