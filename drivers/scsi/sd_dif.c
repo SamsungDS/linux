@@ -50,7 +50,7 @@ void sd_dif_config_host(struct scsi_disk *sdkp, struct queue_limits *lim)
 		bi->csum_type = BLK_INTEGRITY_CSUM_CRC;
 
 	if (type != T10_PI_TYPE3_PROTECTION)
-		bi->flags |= BLK_INTEGRITY_REF_TAG;
+		bi->flags |= BLK_INTEGRITY_REF_TAG | BLK_INTEGRITY_APP_TAG;
 
 	bi->tuple_size = sizeof(struct t10_pi_tuple);
 

@@ -492,6 +492,8 @@ bool bio_integrity_prep(struct bio *bio)
 		bip->bip_flags |= BIP_CHECK_GUARD;
 	if (bi->flags & BLK_INTEGRITY_REF_TAG)
 		bip->bip_flags |= BIP_CHECK_REFTAG;
+	if (bi->flags & BLK_INTEGRITY_APP_TAG)
+		bip->bip_flags |= BIP_CHECK_APPTAG;
 	if (bio_integrity_add_page(bio, virt_to_page(buf), len,
 			offset_in_page(buf)) < len) {
 		printk(KERN_ERR "could not attach integrity payload\n");
