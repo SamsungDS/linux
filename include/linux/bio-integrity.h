@@ -30,6 +30,16 @@ struct bio_integrity_payload {
 	struct bio_vec		bip_inline_vecs[];/* embedded bvec array */
 };
 
+/* flags for integrity meta */
+typedef __u16 __bitwise meta_flags_t;
+
+struct uio_meta {
+	meta_flags_t	flags;
+	u16		app_tag;
+	u32		seed;
+	struct iov_iter iter;
+};
+
 #define BIP_CLONE_FLAGS (BIP_MAPPED_INTEGRITY | BIP_CTRL_NOCHECK | \
 			 BIP_DISK_NOCHECK | BIP_IP_CHECKSUM)
 
