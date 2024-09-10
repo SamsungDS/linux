@@ -383,6 +383,13 @@ struct folio {
 	};
 };
 
+
+struct folio_vec {
+	struct folio    *fv_folio;
+	size_t          fv_offset;
+	size_t          fv_len;
+};
+
 #define FOLIO_MATCH(pg, fl)						\
 	static_assert(offsetof(struct page, pg) == offsetof(struct folio, fl))
 FOLIO_MATCH(flags, flags);

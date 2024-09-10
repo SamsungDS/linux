@@ -887,6 +887,23 @@ static int want_pages_array(struct page ***res, size_t size,
 	return count;
 }
 
+static int want_folios_array(struct folio_vec ***res, size_t size,
+			     size_t start, unsigned int maxpages)
+{
+	unsigned int count = DIV_ROUND_UP(size + start, PAGE_SIZE);
+
+	if (count > maxpages)
+		count = maxpages;
+	WARN_ON(!count);        // caller should've prevented that
+	if (!*res || (*res  && (count > 32))) {
+		*res = kvmalloc_array(count, sizeof(struct folio_vec),
+				      GFP_KERNEL);
+		if (!*res)
+			return 0;
+	}
+	return count;
+}
+
 static ssize_t iter_xarray_populate_pages(struct page **pages, struct xarray *xa,
 					  pgoff_t index, unsigned int nr_pages)
 {
@@ -1588,6 +1605,40 @@ static ssize_t iov_iter_extract_user_pages(struct iov_iter *i,
 	return maxsize;
 }
 
+static ssize_t iov_iter_extract_user_folios(struct iov_iter *i,
+				struct folio_vec ***folios,
+				size_t maxsize,
+				unsigned int maxpages,
+				iov_iter_extraction_t extraction_flags,
+				size_t *offset0,
+				int *nr_folio_vecs)
+{
+	unsigned long addr;
+	unsigned int gup_flags = 0;
+	size_t offset;
+	int res;
+
+	if (i->data_source == ITER_DEST)
+		gup_flags |= FOLL_WRITE;
+	if (extraction_flags & ITER_ALLOW_P2PDMA)
+		gup_flags |= FOLL_PCI_P2PDMA;
+	if (i->nofault)
+		gup_flags |= FOLL_NOFAULT;
+
+	addr = first_iovec_segment(i, &maxsize);
+	*offset0 = offset = addr % PAGE_SIZE;
+	addr &= PAGE_MASK;
+	maxpages = want_folios_array(folios, maxsize, offset, maxpages);
+	if (!maxpages)
+		return -ENOMEM;
+	res = pin_user_folios_fast(addr, maxpages, gup_flags, *folios, nr_folio_vecs);
+	if (unlikely(res <= 0))
+		return res;
+	maxsize = min_t(size_t, maxsize, res * PAGE_SIZE - offset);
+	iov_iter_advance(i, maxsize);
+	return maxsize;
+}
+
 /**
  * iov_iter_extract_pages - Extract a list of contiguous pages from an iterator
  * @i: The iterator to extract from
@@ -1661,3 +1712,22 @@ ssize_t iov_iter_extract_pages(struct iov_iter *i,
 	return -EFAULT;
 }
 EXPORT_SYMBOL_GPL(iov_iter_extract_pages);
+
+ssize_t iov_iter_extract_folios(struct iov_iter *i,
+				struct folio_vec ***folios,
+				size_t maxsize,
+				unsigned int maxpages,
+				iov_iter_extraction_t extraction_flags,
+				size_t *offset0, int *nr_folio_vecs)
+{
+	maxsize = min_t(size_t, min_t(size_t, maxsize, i->count), MAX_RW_COUNT);
+	if (!maxsize)
+		return 0;
+
+	if (likely(user_backed_iter(i)))
+		return iov_iter_extract_user_folios(i, folios, maxsize,
+						maxpages, extraction_flags,
+						offset0, nr_folio_vecs);
+	return -EFAULT;
+}
+EXPORT_SYMBOL_GPL(iov_iter_extract_folios);

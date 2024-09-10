@@ -1175,11 +1175,14 @@ void __bio_release_pages(struct bio *bio, bool mark_dirty)
 			folio_unlock(fi.folio);
 		}
 		page = folio_page(fi.folio, fi.offset / PAGE_SIZE);
+		bio_release_page(bio, page);
+#if 0
 		nr_pages = (fi.offset + fi.length - 1) / PAGE_SIZE -
 			   fi.offset / PAGE_SIZE + 1;
 		do {
 			bio_release_page(bio, page++);
 		} while (--nr_pages != 0);
+#endif
 	}
 }
 EXPORT_SYMBOL_GPL(__bio_release_pages);
@@ -1257,6 +1260,9 @@ static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 	unsigned short entries_left = bio->bi_max_vecs - bio->bi_vcnt;
 	struct bio_vec *bv = bio->bi_io_vec + bio->bi_vcnt;
 	struct page **pages = (struct page **)bv;
+	//struct folio_vec **folios = (struct folio_vec **)bv;
+	struct folio_vec local[32];
+	struct folio_vec **folios = (struct folio_vec **)&local;
 	ssize_t size, left;
 	unsigned len, i = 0;
 	size_t offset;
@@ -1280,9 +1286,12 @@ static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 	 * result to ensure the bio's total size is correct. The remainder of
 	 * the iov data will be picked up in the next bio iteration.
 	 */
-	size = iov_iter_extract_pages(iter, &pages,
-				      UINT_MAX - bio->bi_iter.bi_size,
-				      nr_pages, extraction_flags, &offset);
+
+	int nr_folio_vecs = 0;
+	size = iov_iter_extract_folios(iter, &folios,
+				       UINT_MAX - bio->bi_iter.bi_size,
+				       nr_pages, extraction_flags, &offset,
+				       &nr_folio_vecs);
 	if (unlikely(size <= 0))
 		return size ? size : -EFAULT;
 
@@ -1299,26 +1308,17 @@ static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 		goto out;
 	}
 
-	for (left = size, i = 0; left > 0; left -= len, i++) {
-		struct page *page = pages[i];
-
-		len = min_t(size_t, PAGE_SIZE - offset, left);
-		if (bio_op(bio) == REQ_OP_ZONE_APPEND) {
-			ret = bio_iov_add_zone_append_page(bio, page, len,
-					offset);
-			if (ret)
-				break;
-		} else
-			bio_iov_add_page(bio, page, len, offset);
-
+	for (i = 0; i< nr_folio_vecs; i++) {
+		struct folio_vec * vec = (void *)folios + (sizeof(struct folio_vec) * i);
+		offset = vec->fv_offset + offset;
+		len = vec->fv_len;
+		bio_add_folio_nofail(bio, vec->fv_folio, len, offset);
+		// TODO : use the folio function to add to the bio
 		offset = 0;
 	}
-
-	iov_iter_revert(iter, left);
+	if (folios != &local)
+		kvfree(folios);
 out:
-	while (i < nr_pages)
-		bio_release_page(bio, pages[i++]);
-
 	return ret;
 }
 
