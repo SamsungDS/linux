@@ -82,6 +82,16 @@ struct iov_iter {
 	};
 };
 
+/* flags for integrity meta */
+typedef __u16 __bitwise uio_meta_flags_t;
+
+struct uio_meta {
+	uio_meta_flags_t	flags;
+	u16			app_tag;
+	u64			seed;
+	struct iov_iter		iter;
+};
+
 static inline const struct iovec *iter_iov(const struct iov_iter *iter)
 {
 	if (iter->iter_type == ITER_UBUF)
