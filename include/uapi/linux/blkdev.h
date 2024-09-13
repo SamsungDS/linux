@@ -11,4 +11,15 @@
  */
 #define BLOCK_URING_CMD_DISCARD			_IO(0x12, 0)
 
+/*
+ * flags for integrity meta
+ */
+#define BLK_INTEGRITY_CHK_GUARD		(1U << 0) /* enforce guard check */
+#define BLK_INTEGRITY_CHK_APPTAG	(1U << 1) /* enforce app tag check */
+#define BLK_INTEGRITY_CHK_REFTAG	(1U << 2) /* enforce ref tag check */
+
+#define BLK_INTEGRITY_VALID_FLAGS (BLK_INTEGRITY_CHK_GUARD |\
+				   BLK_INTEGRITY_CHK_APPTAG |\
+				   BLK_INTEGRITY_CHK_REFTAG)
+
 #endif
