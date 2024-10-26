@@ -14,11 +14,6 @@ enum {
 	IORING_RSRC_INVALID		= 2,
 };
 
-struct io_rsrc_data {
-	unsigned int			nr;
-	struct io_rsrc_node		**nodes;
-};
-
 struct io_rsrc_node {
 	struct io_ring_ctx		*ctx;
 	int				refs;
@@ -54,6 +49,8 @@ struct io_rsrc_node *io_rsrc_node_alloc(struct io_ring_ctx *ctx,
 					struct io_rsrc_data *data, int index,
 					int type);
 void io_free_rsrc_node(struct io_rsrc_node *node);
+void io_rsrc_data_free(struct io_rsrc_data *data);
+int io_rsrc_data_alloc(struct io_rsrc_data *data, unsigned nr);
 
 int io_import_fixed(int ddir, struct iov_iter *iter,
 			   struct io_mapped_ubuf *imu,
@@ -76,6 +73,16 @@ int io_register_rsrc(struct io_ring_ctx *ctx, void __user *arg,
 
 extern const struct io_rsrc_node empty_node;
 #define rsrc_empty_node	(struct io_rsrc_node *) &empty_node
+
+static inline struct io_rsrc_node *io_rsrc_node_lookup(struct io_rsrc_data *data,
+						       int index)
+{
+	if (index < data->nr) {
+		index = array_index_nospec(index, data->nr);
+		return data->nodes[index];
+	}
+	return NULL;
+}
 
 static inline void io_put_rsrc_node(struct io_rsrc_node *node)
 {
