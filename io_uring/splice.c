@@ -66,7 +66,7 @@ static struct file *io_splice_get_file(struct io_kiocb *req,
 		return io_file_get_normal(req, sp->splice_fd_in);
 
 	io_ring_submit_lock(ctx, issue_flags);
-	node = io_rsrc_node_lookup(&ctx->file_table.data, sp->splice_fd_in);
+	node = io_rsrc_node_lookup(&ctx->file_table.data, &sp->splice_fd_in);
 	if (node) {
 		node->refs++;
 		sp->rsrc_node = node;

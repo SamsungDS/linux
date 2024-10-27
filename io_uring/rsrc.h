@@ -75,11 +75,11 @@ extern const struct io_rsrc_node empty_node;
 #define rsrc_empty_node	(struct io_rsrc_node *) &empty_node
 
 static inline struct io_rsrc_node *io_rsrc_node_lookup(struct io_rsrc_data *data,
-						       int index)
+						       int *index)
 {
-	if (index < data->nr) {
-		index = array_index_nospec(index, data->nr);
-		return data->nodes[index];
+	if (*index < data->nr) {
+		*index = array_index_nospec(*index, data->nr);
+		return data->nodes[*index];
 	}
 	return NULL;
 }

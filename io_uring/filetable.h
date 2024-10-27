@@ -10,10 +10,10 @@ bool io_alloc_file_tables(struct io_file_table *table, unsigned nr_files);
 void io_free_file_tables(struct io_file_table *table);
 
 int io_fixed_fd_install(struct io_kiocb *req, unsigned int issue_flags,
-			struct file *file, unsigned int file_slot);
+			struct file *file, int file_slot);
 int __io_fixed_fd_install(struct io_ring_ctx *ctx, struct file *file,
-				unsigned int file_slot);
-int io_fixed_fd_remove(struct io_ring_ctx *ctx, unsigned int offset);
+				int file_slot);
+int io_fixed_fd_remove(struct io_ring_ctx *ctx, int offset);
 
 int io_register_file_alloc_range(struct io_ring_ctx *ctx,
 				 struct io_uring_file_index_range __user *arg);
@@ -52,8 +52,9 @@ static inline struct file *io_slot_file(struct io_rsrc_node *node)
 static inline struct file *io_file_from_index(struct io_file_table *table,
 					      int index)
 {
-	struct io_rsrc_node *node = table->data.nodes[index];
+	struct io_rsrc_node *node;
 
+	node = io_rsrc_node_lookup(&table->data, &index);
 	if (node)
 		return io_slot_file(node);
 	return NULL;
