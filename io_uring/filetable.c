@@ -74,7 +74,7 @@ static int io_install_fixed_file(struct io_ring_ctx *ctx, struct file *file,
 
 	old_node = io_rsrc_node_lookup(&ctx->file_table.data, &slot_index);
 	if (old_node)
-		io_put_rsrc_node(old_node);
+		io_reset_rsrc_node(&ctx->file_table.data, slot_index);
 	else
 		io_file_bitmap_set(&ctx->file_table, slot_index);
 
@@ -134,8 +134,7 @@ int io_fixed_fd_remove(struct io_ring_ctx *ctx, int offset)
 	node = io_rsrc_node_lookup(&ctx->file_table.data, &offset);
 	if (!node)
 		return -EBADF;
-	io_put_rsrc_node(node);
-	ctx->file_table.data.nodes[offset] = NULL;
+	io_reset_rsrc_node(&ctx->file_table.data, offset);
 	io_file_bitmap_clear(&ctx->file_table, offset);
 	return 0;
 }

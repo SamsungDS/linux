@@ -166,6 +166,7 @@ __cold int io_rsrc_data_alloc(struct io_rsrc_data *data, unsigned nr)
 					GFP_KERNEL_ACCOUNT | __GFP_ZERO);
 	if (data->nodes) {
 		data->nr = nr;
+		data->last_index = -1U;
 		return 0;
 	}
 	return -ENOMEM;
@@ -204,8 +205,7 @@ static int __io_sqe_files_update(struct io_ring_ctx *ctx,
 		i = up->offset + done;
 		node = io_rsrc_node_lookup(&ctx->file_table.data, &i);
 		if (node) {
-			io_put_rsrc_node(node);
-			ctx->file_table.data.nodes[i] = NULL;
+			io_reset_rsrc_node(&ctx->file_table.data, i);
 			io_file_bitmap_clear(&ctx->file_table, i);
 		}
 		if (fd != -1) {
@@ -286,7 +286,7 @@ static int __io_sqe_buffers_update(struct io_ring_ctx *ctx,
 			break;
 		}
 		if (ctx->buf_table.nodes[i])
-			io_put_rsrc_node(ctx->buf_table.nodes[i]);
+			io_reset_rsrc_node(&ctx->buf_table, i);
 
 		ctx->buf_table.nodes[i] = node;
 		if (tag)
@@ -476,10 +476,12 @@ void io_free_rsrc_node(struct io_rsrc_node *node)
 
 	switch (node->type) {
 	case IORING_RSRC_FILE:
+		io_rsrc_cache_clear(&ctx->file_table.data, node);
 		if (io_slot_file(node))
 			fput(io_slot_file(node));
 		break;
 	case IORING_RSRC_BUFFER:
+		io_rsrc_cache_clear(&ctx->buf_table, node);
 		if (node->buf)
 			io_buffer_unmap(node->ctx, node);
 		break;

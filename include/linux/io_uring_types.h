@@ -57,6 +57,8 @@ struct io_wq_work {
 
 struct io_rsrc_data {
 	unsigned int			nr;
+	unsigned int			last_index;
+	struct io_rsrc_node		*last_node;
 	struct io_rsrc_node		**nodes;
 };
 

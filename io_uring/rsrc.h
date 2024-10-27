@@ -78,16 +78,42 @@ static inline struct io_rsrc_node *io_rsrc_node_lookup(struct io_rsrc_data *data
 						       int *index)
 {
 	if (*index < data->nr) {
-		*index = array_index_nospec(*index, data->nr);
-		return data->nodes[*index];
+		if (*index != data->last_index) {
+			*index = array_index_nospec(*index, data->nr);
+			if (data->nodes[*index]) {
+				data->last_index = *index;
+				data->last_node = data->nodes[*index];
+			}
+		}
+		return data->last_node;
 	}
 	return NULL;
+}
+
+static inline void io_rsrc_cache_clear(struct io_rsrc_data *data,
+				       struct io_rsrc_node *node)
+{
+	if (data->last_node == node) {
+		data->last_node = NULL;
+		data->last_index = -1U;
+	}
 }
 
 static inline void io_put_rsrc_node(struct io_rsrc_node *node)
 {
 	if (node != &empty_node && !--node->refs)
 		io_free_rsrc_node(node);
+}
+
+static inline void io_reset_rsrc_node(struct io_rsrc_data *data, int index)
+{
+	struct io_rsrc_node *node = data->nodes[index];
+
+	if (node) {
+		io_rsrc_cache_clear(data, node);
+		io_put_rsrc_node(node);
+		data->nodes[index] = NULL;
+	}
 }
 
 static inline void io_req_put_rsrc_nodes(struct io_kiocb *req)
