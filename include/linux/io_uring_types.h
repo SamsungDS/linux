@@ -55,13 +55,15 @@ struct io_wq_work {
 	int cancel_seq;
 };
 
-struct io_fixed_file {
-	/* file * with additional FFS_* flags */
-	unsigned long file_ptr;
+struct io_rsrc_data {
+	unsigned int			nr;
+	unsigned int			last_index;
+	struct io_rsrc_node		*last_node;
+	struct io_rsrc_node		**nodes;
 };
 
 struct io_file_table {
-	struct io_fixed_file *files;
+	struct io_rsrc_data data;
 	unsigned long *bitmap;
 	unsigned int alloc_hint;
 };
@@ -269,7 +271,6 @@ struct io_ring_ctx {
 		 * Fixed resources fast path, should be accessed only under
 		 * uring_lock, and updated through io_uring_register(2)
 		 */
-		struct io_rsrc_node	*rsrc_node;
 		atomic_t		cancel_seq;
 
 		/*
@@ -282,9 +283,7 @@ struct io_ring_ctx {
 		struct io_wq_work_list	iopoll_list;
 
 		struct io_file_table	file_table;
-		struct io_mapped_ubuf	**user_bufs;
-		unsigned		nr_user_files;
-		unsigned		nr_user_bufs;
+		struct io_rsrc_data	buf_table;
 
 		struct io_submit_state	submit_state;
 
@@ -327,6 +326,14 @@ struct io_ring_ctx {
 		atomic_t		cq_wait_nr;
 		atomic_t		cq_timeouts;
 		struct wait_queue_head	cq_wait;
+
+		/*
+		 * If registered with IORING_REGISTER_CQWAIT_REG, a single
+		 * page holds N entries, mapped in cq_wait_arg. cq_wait_index
+		 * is the maximum allowable index.
+		 */
+		struct io_uring_reg_wait	*cq_wait_arg;
+		unsigned char			cq_wait_index;
 	} ____cacheline_aligned_in_smp;
 
 	/* timeouts */
@@ -363,16 +370,6 @@ struct io_ring_ctx {
 	/* Keep this last, we don't need it for the fast path */
 	struct wait_queue_head		poll_wq;
 	struct io_restriction		restrictions;
-
-	/* slow path rsrc auxilary data, used by update/register */
-	struct io_rsrc_data		*file_data;
-	struct io_rsrc_data		*buf_data;
-
-	/* protected by ->uring_lock */
-	struct list_head		rsrc_ref_list;
-	struct io_alloc_cache		rsrc_node_cache;
-	struct wait_queue_head		rsrc_quiesce_wq;
-	unsigned			rsrc_quiesce;
 
 	u32			pers_next;
 	struct xarray		personalities;
@@ -430,6 +427,8 @@ struct io_ring_ctx {
 	unsigned short			n_sqe_pages;
 	struct page			**ring_pages;
 	struct page			**sqe_pages;
+
+	struct page			**cq_wait_page;
 };
 
 struct io_tw_state {
@@ -637,7 +636,7 @@ struct io_kiocb {
 		__poll_t apoll_events;
 	};
 
-	struct io_rsrc_node		*rsrc_node;
+	struct io_rsrc_node		*rsrc_nodes[2];
 
 	atomic_t			refs;
 	bool				cancel_seq_set;

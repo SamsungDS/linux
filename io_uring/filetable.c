@@ -38,63 +38,53 @@ static int io_file_bitmap_get(struct io_ring_ctx *ctx)
 
 bool io_alloc_file_tables(struct io_file_table *table, unsigned nr_files)
 {
-	table->files = kvcalloc(nr_files, sizeof(table->files[0]),
-				GFP_KERNEL_ACCOUNT);
-	if (unlikely(!table->files))
+	if (io_rsrc_data_alloc(&table->data, nr_files))
 		return false;
-
 	table->bitmap = bitmap_zalloc(nr_files, GFP_KERNEL_ACCOUNT);
-	if (unlikely(!table->bitmap)) {
-		kvfree(table->files);
-		return false;
-	}
-
-	return true;
+	if (table->bitmap)
+		return true;
+	io_rsrc_data_free(&table->data);
+	return false;
 }
 
 void io_free_file_tables(struct io_file_table *table)
 {
-	kvfree(table->files);
+	io_rsrc_data_free(&table->data);
 	bitmap_free(table->bitmap);
-	table->files = NULL;
 	table->bitmap = NULL;
 }
 
 static int io_install_fixed_file(struct io_ring_ctx *ctx, struct file *file,
-				 u32 slot_index)
+				 int slot_index)
 	__must_hold(&req->ctx->uring_lock)
 {
-	struct io_fixed_file *file_slot;
-	int ret;
+	struct io_rsrc_node *node, *old_node;
 
 	if (io_is_uring_fops(file))
 		return -EBADF;
-	if (!ctx->file_data)
+	if (!ctx->file_table.data.nr)
 		return -ENXIO;
-	if (slot_index >= ctx->nr_user_files)
+	if (slot_index >= ctx->file_table.data.nr)
 		return -EINVAL;
 
-	slot_index = array_index_nospec(slot_index, ctx->nr_user_files);
-	file_slot = io_fixed_file_slot(&ctx->file_table, slot_index);
+	node = io_rsrc_node_alloc(ctx, &ctx->file_table.data, slot_index,
+				  IORING_RSRC_FILE);
+	if (IS_ERR(node))
+		return -ENOMEM;
 
-	if (file_slot->file_ptr) {
-		ret = io_queue_rsrc_removal(ctx->file_data, slot_index,
-					    io_slot_file(file_slot));
-		if (ret)
-			return ret;
-
-		file_slot->file_ptr = 0;
-	} else {
+	old_node = io_rsrc_node_lookup(&ctx->file_table.data, &slot_index);
+	if (old_node)
+		io_reset_rsrc_node(&ctx->file_table.data, slot_index);
+	else
 		io_file_bitmap_set(&ctx->file_table, slot_index);
-	}
 
-	*io_get_tag_slot(ctx->file_data, slot_index) = 0;
-	io_fixed_file_set(file_slot, file);
+	ctx->file_table.data.nodes[slot_index] = node;
+	io_fixed_file_set(node, file);
 	return 0;
 }
 
 int __io_fixed_fd_install(struct io_ring_ctx *ctx, struct file *file,
-			  unsigned int file_slot)
+			  int file_slot)
 {
 	bool alloc_slot = file_slot == IORING_FILE_INDEX_ALLOC;
 	int ret;
@@ -118,7 +108,7 @@ int __io_fixed_fd_install(struct io_ring_ctx *ctx, struct file *file,
  * fput() is called correspondingly.
  */
 int io_fixed_fd_install(struct io_kiocb *req, unsigned int issue_flags,
-			struct file *file, unsigned int file_slot)
+			struct file *file, int file_slot)
 {
 	struct io_ring_ctx *ctx = req->ctx;
 	int ret;
@@ -132,27 +122,19 @@ int io_fixed_fd_install(struct io_kiocb *req, unsigned int issue_flags,
 	return ret;
 }
 
-int io_fixed_fd_remove(struct io_ring_ctx *ctx, unsigned int offset)
+int io_fixed_fd_remove(struct io_ring_ctx *ctx, int offset)
 {
-	struct io_fixed_file *file_slot;
-	int ret;
+	struct io_rsrc_node *node;
 
-	if (unlikely(!ctx->file_data))
+	if (unlikely(!ctx->file_table.data.nr))
 		return -ENXIO;
-	if (offset >= ctx->nr_user_files)
+	if (offset >= ctx->file_table.data.nr)
 		return -EINVAL;
 
-	offset = array_index_nospec(offset, ctx->nr_user_files);
-	file_slot = io_fixed_file_slot(&ctx->file_table, offset);
-	if (!file_slot->file_ptr)
+	node = io_rsrc_node_lookup(&ctx->file_table.data, &offset);
+	if (!node)
 		return -EBADF;
-
-	ret = io_queue_rsrc_removal(ctx->file_data, offset,
-				    io_slot_file(file_slot));
-	if (ret)
-		return ret;
-
-	file_slot->file_ptr = 0;
+	io_reset_rsrc_node(&ctx->file_table.data, offset);
 	io_file_bitmap_clear(&ctx->file_table, offset);
 	return 0;
 }
@@ -167,7 +149,7 @@ int io_register_file_alloc_range(struct io_ring_ctx *ctx,
 		return -EFAULT;
 	if (check_add_overflow(range.off, range.len, &end))
 		return -EOVERFLOW;
-	if (range.resv || end > ctx->nr_user_files)
+	if (range.resv || end > ctx->file_table.data.nr)
 		return -EINVAL;
 
 	io_file_table_set_alloc_range(ctx, range.off, range.len);

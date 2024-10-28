@@ -312,9 +312,7 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->sqd_list);
 	INIT_LIST_HEAD(&ctx->cq_overflow_list);
 	INIT_LIST_HEAD(&ctx->io_buffers_cache);
-	ret = io_alloc_cache_init(&ctx->rsrc_node_cache, IO_NODE_ALLOC_CACHE_MAX,
-			    sizeof(struct io_rsrc_node));
-	ret |= io_alloc_cache_init(&ctx->apoll_cache, IO_POLL_ALLOC_CACHE_MAX,
+	ret = io_alloc_cache_init(&ctx->apoll_cache, IO_POLL_ALLOC_CACHE_MAX,
 			    sizeof(struct async_poll));
 	ret |= io_alloc_cache_init(&ctx->netmsg_cache, IO_ALLOC_CACHE_MAX,
 			    sizeof(struct io_async_msghdr));
@@ -333,7 +331,6 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	mutex_init(&ctx->uring_lock);
 	init_waitqueue_head(&ctx->cq_wait);
 	init_waitqueue_head(&ctx->poll_wq);
-	init_waitqueue_head(&ctx->rsrc_quiesce_wq);
 	spin_lock_init(&ctx->completion_lock);
 	spin_lock_init(&ctx->timeout_lock);
 	INIT_WQ_LIST(&ctx->iopoll_list);
@@ -341,7 +338,6 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 	INIT_LIST_HEAD(&ctx->defer_list);
 	INIT_LIST_HEAD(&ctx->timeout_list);
 	INIT_LIST_HEAD(&ctx->ltimeout_list);
-	INIT_LIST_HEAD(&ctx->rsrc_ref_list);
 	init_llist_head(&ctx->work_llist);
 	INIT_LIST_HEAD(&ctx->tctx_list);
 	ctx->submit_state.free_list.next = NULL;
@@ -360,7 +356,6 @@ static __cold struct io_ring_ctx *io_ring_ctx_alloc(struct io_uring_params *p)
 free_ref:
 	percpu_ref_exit(&ctx->refs);
 err:
-	io_alloc_cache_free(&ctx->rsrc_node_cache, kfree);
 	io_alloc_cache_free(&ctx->apoll_cache, kfree);
 	io_alloc_cache_free(&ctx->netmsg_cache, io_netmsg_cache_free);
 	io_alloc_cache_free(&ctx->rw_cache, io_rw_cache_free);
@@ -952,6 +947,8 @@ void io_req_defer_failed(struct io_kiocb *req, s32 res)
 static void io_preinit_req(struct io_kiocb *req, struct io_ring_ctx *ctx)
 {
 	req->ctx = ctx;
+	req->rsrc_nodes[IORING_RSRC_FILE] = rsrc_empty_node;
+	req->rsrc_nodes[IORING_RSRC_BUFFER] = rsrc_empty_node;
 	req->link = NULL;
 	req->async_data = NULL;
 	/* not necessary, but safer to zero */
@@ -1415,7 +1412,7 @@ static void io_free_batch_list(struct io_ring_ctx *ctx,
 				io_clean_op(req);
 		}
 		io_put_file(req);
-		io_put_rsrc_node(ctx, req->rsrc_node);
+		io_req_put_rsrc_nodes(req);
 		io_put_task(req->task);
 
 		node = req->comp_list.next;
@@ -1878,20 +1875,16 @@ inline struct file *io_file_get_fixed(struct io_kiocb *req, int fd,
 				      unsigned int issue_flags)
 {
 	struct io_ring_ctx *ctx = req->ctx;
-	struct io_fixed_file *slot;
+	struct io_rsrc_node *node;
 	struct file *file = NULL;
 
 	io_ring_submit_lock(ctx, issue_flags);
-
-	if (unlikely((unsigned int)fd >= ctx->nr_user_files))
-		goto out;
-	fd = array_index_nospec(fd, ctx->nr_user_files);
-	slot = io_fixed_file_slot(&ctx->file_table, fd);
-	if (!req->rsrc_node)
-		__io_req_set_rsrc_node(req, ctx);
-	req->flags |= io_slot_flags(slot);
-	file = io_slot_file(slot);
-out:
+	node = io_rsrc_node_lookup(&ctx->file_table.data, &fd);
+	if (node) {
+		io_req_assign_rsrc_node(req, node);
+		req->flags |= io_slot_flags(node);
+		file = io_slot_file(node);
+	}
 	io_ring_submit_unlock(ctx, issue_flags);
 	return file;
 }
@@ -2036,7 +2029,6 @@ static int io_init_req(struct io_ring_ctx *ctx, struct io_kiocb *req,
 	req->flags = (__force io_req_flags_t) sqe_flags;
 	req->cqe.user_data = READ_ONCE(sqe->user_data);
 	req->file = NULL;
-	req->rsrc_node = NULL;
 	req->task = current;
 	req->cancel_seq_set = false;
 
@@ -2495,9 +2487,10 @@ static inline int io_cqring_wait_schedule(struct io_ring_ctx *ctx,
 
 struct ext_arg {
 	size_t argsz;
-	struct __kernel_timespec __user *ts;
+	struct timespec64 ts;
 	const sigset_t __user *sig;
 	ktime_t min_time;
+	bool ts_set;
 };
 
 /*
@@ -2535,13 +2528,8 @@ static int io_cqring_wait(struct io_ring_ctx *ctx, int min_events, u32 flags,
 	iowq.timeout = KTIME_MAX;
 	start_time = io_get_time(ctx);
 
-	if (ext_arg->ts) {
-		struct timespec64 ts;
-
-		if (get_timespec64(&ts, ext_arg->ts))
-			return -EFAULT;
-
-		iowq.timeout = timespec64_to_ktime(ts);
+	if (ext_arg->ts_set) {
+		iowq.timeout = timespec64_to_ktime(ext_arg->ts);
 		if (!(flags & IORING_ENTER_ABS_TIMER))
 			iowq.timeout = ktime_add(iowq.timeout, start_time);
 	}
@@ -2722,15 +2710,10 @@ static void io_req_caches_free(struct io_ring_ctx *ctx)
 static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 {
 	io_sq_thread_finish(ctx);
-	/* __io_rsrc_put_work() may need uring_lock to progress, wait w/o it */
-	if (WARN_ON_ONCE(!list_empty(&ctx->rsrc_ref_list)))
-		return;
 
 	mutex_lock(&ctx->uring_lock);
-	if (ctx->buf_data)
-		__io_sqe_buffers_unregister(ctx);
-	if (ctx->file_data)
-		__io_sqe_files_unregister(ctx);
+	io_sqe_buffers_unregister(ctx);
+	io_sqe_files_unregister(ctx);
 	io_cqring_overflow_kill(ctx);
 	io_eventfd_unregister(ctx);
 	io_alloc_cache_free(&ctx->apoll_cache, kfree);
@@ -2740,20 +2723,15 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_alloc_cache_free(&ctx->msg_cache, io_msg_cache_free);
 	io_futex_cache_free(ctx);
 	io_destroy_buffers(ctx);
+	io_unregister_cqwait_reg(ctx);
 	mutex_unlock(&ctx->uring_lock);
 	if (ctx->sq_creds)
 		put_cred(ctx->sq_creds);
 	if (ctx->submitter_task)
 		put_task_struct(ctx->submitter_task);
 
-	/* there are no registered resources left, nobody uses it */
-	if (ctx->rsrc_node)
-		io_rsrc_node_destroy(ctx, ctx->rsrc_node);
-
-	WARN_ON_ONCE(!list_empty(&ctx->rsrc_ref_list));
 	WARN_ON_ONCE(!list_empty(&ctx->ltimeout_list));
 
-	io_alloc_cache_free(&ctx->rsrc_node_cache, kfree);
 	if (ctx->mm_account) {
 		mmdrop(ctx->mm_account);
 		ctx->mm_account = NULL;
@@ -3228,22 +3206,45 @@ void __io_uring_cancel(bool cancel_all)
 	io_uring_cancel_generic(cancel_all, NULL);
 }
 
-static int io_validate_ext_arg(unsigned flags, const void __user *argp, size_t argsz)
+static struct io_uring_reg_wait *io_get_ext_arg_reg(struct io_ring_ctx *ctx,
+			const struct io_uring_getevents_arg __user *uarg)
 {
-	if (flags & IORING_ENTER_EXT_ARG) {
-		struct io_uring_getevents_arg arg;
+	struct io_uring_reg_wait *arg = READ_ONCE(ctx->cq_wait_arg);
 
-		if (argsz != sizeof(arg))
-			return -EINVAL;
-		if (copy_from_user(&arg, argp, sizeof(arg)))
-			return -EFAULT;
+	if (arg) {
+		unsigned int index = (unsigned int) (uintptr_t) uarg;
+
+		if (index <= ctx->cq_wait_index)
+			return arg + index;
 	}
+
+	return ERR_PTR(-EFAULT);
+}
+
+static int io_validate_ext_arg(struct io_ring_ctx *ctx, unsigned flags,
+			       const void __user *argp, size_t argsz)
+{
+	struct io_uring_getevents_arg arg;
+
+	if (!(flags & IORING_ENTER_EXT_ARG))
+		return 0;
+
+	if (flags & IORING_ENTER_EXT_ARG_REG) {
+		if (argsz != sizeof(struct io_uring_reg_wait))
+			return -EINVAL;
+		return PTR_ERR(io_get_ext_arg_reg(ctx, argp));
+	}
+	if (argsz != sizeof(arg))
+		return -EINVAL;
+	if (copy_from_user(&arg, argp, sizeof(arg)))
+		return -EFAULT;
 	return 0;
 }
 
-static int io_get_ext_arg(unsigned flags, const void __user *argp,
-			  struct ext_arg *ext_arg)
+static int io_get_ext_arg(struct io_ring_ctx *ctx, unsigned flags,
+			  const void __user *argp, struct ext_arg *ext_arg)
 {
+	const struct io_uring_getevents_arg __user *uarg = argp;
 	struct io_uring_getevents_arg arg;
 
 	/*
@@ -3252,7 +3253,28 @@ static int io_get_ext_arg(unsigned flags, const void __user *argp,
 	 */
 	if (!(flags & IORING_ENTER_EXT_ARG)) {
 		ext_arg->sig = (const sigset_t __user *) argp;
-		ext_arg->ts = NULL;
+		return 0;
+	}
+
+	if (flags & IORING_ENTER_EXT_ARG_REG) {
+		struct io_uring_reg_wait *w;
+
+		if (ext_arg->argsz != sizeof(struct io_uring_reg_wait))
+			return -EINVAL;
+		w = io_get_ext_arg_reg(ctx, argp);
+		if (IS_ERR(w))
+			return PTR_ERR(w);
+
+		if (w->flags & ~IORING_REG_WAIT_TS)
+			return -EINVAL;
+		ext_arg->min_time = READ_ONCE(w->min_wait_usec) * NSEC_PER_USEC;
+		ext_arg->sig = u64_to_user_ptr(READ_ONCE(w->sigmask));
+		ext_arg->argsz = READ_ONCE(w->sigmask_sz);
+		if (w->flags & IORING_REG_WAIT_TS) {
+			ext_arg->ts.tv_sec = READ_ONCE(w->ts.tv_sec);
+			ext_arg->ts.tv_nsec = READ_ONCE(w->ts.tv_nsec);
+			ext_arg->ts_set = true;
+		}
 		return 0;
 	}
 
@@ -3262,13 +3284,32 @@ static int io_get_ext_arg(unsigned flags, const void __user *argp,
 	 */
 	if (ext_arg->argsz != sizeof(arg))
 		return -EINVAL;
-	if (copy_from_user(&arg, argp, sizeof(arg)))
+#ifdef CONFIG_64BIT
+	if (!user_access_begin(uarg, sizeof(*uarg)))
 		return -EFAULT;
+	unsafe_get_user(arg.sigmask, &uarg->sigmask, uaccess_end);
+	unsafe_get_user(arg.sigmask_sz, &uarg->sigmask_sz, uaccess_end);
+	unsafe_get_user(arg.min_wait_usec, &uarg->min_wait_usec, uaccess_end);
+	unsafe_get_user(arg.ts, &uarg->ts, uaccess_end);
+	user_access_end();
+#else
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+#endif
 	ext_arg->min_time = arg.min_wait_usec * NSEC_PER_USEC;
 	ext_arg->sig = u64_to_user_ptr(arg.sigmask);
 	ext_arg->argsz = arg.sigmask_sz;
-	ext_arg->ts = u64_to_user_ptr(arg.ts);
+	if (arg.ts) {
+		if (get_timespec64(&ext_arg->ts, u64_to_user_ptr(arg.ts)))
+			return -EFAULT;
+		ext_arg->ts_set = true;
+	}
 	return 0;
+#ifdef CONFIG_64BIT
+uaccess_end:
+	user_access_end();
+	return -EFAULT;
+#endif
 }
 
 SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
@@ -3282,7 +3323,8 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 	if (unlikely(flags & ~(IORING_ENTER_GETEVENTS | IORING_ENTER_SQ_WAKEUP |
 			       IORING_ENTER_SQ_WAIT | IORING_ENTER_EXT_ARG |
 			       IORING_ENTER_REGISTERED_RING |
-			       IORING_ENTER_ABS_TIMER)))
+			       IORING_ENTER_ABS_TIMER |
+			       IORING_ENTER_EXT_ARG_REG)))
 		return -EINVAL;
 
 	/*
@@ -3365,7 +3407,7 @@ SYSCALL_DEFINE6(io_uring_enter, unsigned int, fd, u32, to_submit,
 			 */
 			mutex_lock(&ctx->uring_lock);
 iopoll_locked:
-			ret2 = io_validate_ext_arg(flags, argp, argsz);
+			ret2 = io_validate_ext_arg(ctx, flags, argp, argsz);
 			if (likely(!ret2)) {
 				min_complete = min(min_complete,
 						   ctx->cq_entries);
@@ -3375,7 +3417,7 @@ iopoll_locked:
 		} else {
 			struct ext_arg ext_arg = { .argsz = argsz };
 
-			ret2 = io_get_ext_arg(flags, argp, &ext_arg);
+			ret2 = io_get_ext_arg(ctx, flags, argp, &ext_arg);
 			if (likely(!ret2)) {
 				min_complete = min(min_complete,
 						   ctx->cq_entries);
@@ -3668,10 +3710,6 @@ static __cold int io_uring_create(unsigned entries, struct io_uring_params *p,
 	if (ret)
 		goto err;
 
-	ret = io_rsrc_init(ctx);
-	if (ret)
-		goto err;
-
 	p->features = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP |
 			IORING_FEAT_SUBMIT_STABLE | IORING_FEAT_RW_CUR_POS |
 			IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_FAST_POLL |
@@ -3785,6 +3823,8 @@ static int __init io_uring_init(void)
 	struct kmem_cache_args kmem_args = {
 		.useroffset = offsetof(struct io_kiocb, cmd.data),
 		.usersize = sizeof_field(struct io_kiocb, cmd.data),
+		.freeptr_offset = offsetof(struct io_kiocb, work),
+		.use_freeptr_offset = true,
 	};
 
 #define __BUILD_BUG_VERIFY_OFFSET_SIZE(stype, eoffset, esize, ename) do { \
