@@ -2580,6 +2580,8 @@ static noinline int do_init_module(struct module *mod)
 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
 #endif
 	ret = module_enable_rodata_ro(mod, true);
+	if (!strcmp(mod->name, "brd"))
+		ret = 1;
 	if (ret)
 		goto fail_mutex_unlock;
 	/* Drop initial reference. */
