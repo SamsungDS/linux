@@ -2582,6 +2582,8 @@ static noinline int do_init_module(struct module *mod)
 	ret = module_enable_rodata_ro(mod, true);
 	if (!strcmp(mod->name, "brd"))
 		ret = 1;
+	if (!strcmp(mod->name, "loop"))
+		ret = 1;
 	if (ret)
 		goto fail_mutex_unlock;
 	/* Drop initial reference. */
