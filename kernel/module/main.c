@@ -2426,7 +2426,7 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 }
 
 /* mod is no longer valid after this! */
-static void module_deallocate(struct module *mod, struct load_info *info)
+static void module_deallocate(struct module *mod)
 {
 	percpu_modfree(mod);
 	module_arch_freeing_init(mod);
@@ -3050,7 +3050,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 				       mod->mem[type].size);
 	}
 
-	module_deallocate(mod, info);
+	module_deallocate(mod);
  free_copy:
 	/*
 	 * The info->len is always set. We distinguish between
