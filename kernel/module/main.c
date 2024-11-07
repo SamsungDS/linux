@@ -2627,10 +2627,12 @@ fail_mutex_unlock:
 fail_free_freeinit:
 	kfree(freeinit);
 fail:
+	mutex_lock(&module_mutex);
 	/* Try to protect us from buggy refcounters. */
 	mod->state = MODULE_STATE_GOING;
-	synchronize_rcu();
 	module_put(mod);
+	mutex_unlock(&module_mutex);
+	synchronize_rcu();
 	blocking_notifier_call_chain(&module_notify_list,
 				     MODULE_STATE_GOING, mod);
 	klp_module_going(mod);
