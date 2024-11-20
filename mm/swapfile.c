@@ -3128,6 +3128,7 @@ static int claim_swapfile(struct swap_info_struct *si, struct inode *inode)
 		si->flags |= SWP_BLKDEV;
 	} else if (S_ISREG(inode->i_mode)) {
 		si->bdev = inode->i_sb->s_bdev;
+		si->flags |= SWP_BLKDEV;
 	}
 
 	return 0;
