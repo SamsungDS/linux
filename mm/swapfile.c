@@ -74,6 +74,7 @@ atomic_long_t nr_swap_pages;
 EXPORT_SYMBOL_GPL(nr_swap_pages);
 /* protected with swap_lock. reading in vm_swap_full() doesn't need lock */
 long total_swap_pages;
+unsigned int min_order_swap = 0;
 static int least_priority = -1;
 unsigned long swapfile_maximum_size;
 #ifdef CONFIG_MIGRATION
@@ -2573,6 +2574,22 @@ add_swap_extent(struct swap_info_struct *sis, unsigned long start_page,
 }
 EXPORT_SYMBOL_GPL(add_swap_extent);
 
+static int setup_swap_min_order(struct swap_info_struct *si)
+{
+	struct file *swap_file = si->swap_file;
+	struct address_space *mapping = swap_file->f_mapping;
+	struct inode *inode = mapping->host;
+
+	if (S_ISBLK(inode->i_mode) || S_ISREG(inode->i_mode)) {
+		si->min_folio_order = mapping_min_folio_order(mapping);
+	} else
+		si->min_folio_order = 0;
+
+	if (si->min_folio_order && !IS_ENABLED(CONFIG_THP_SWAP))
+		return -EINVAL;
+
+	return 0;
+}
 /*
  * A `swap extent' is a simple thing which maps a contiguous range of pages
  * onto a contiguous range of disk blocks.  A rbtree of swap extents is
@@ -2677,6 +2694,7 @@ static void _enable_swap_info(struct swap_info_struct *si)
 	si->flags |= SWP_WRITEOK;
 	atomic_long_add(si->pages, &nr_swap_pages);
 	total_swap_pages += si->pages;
+	min_order_swap = max(si->min_folio_order, min_order_swap);
 
 	assert_spin_locked(&swap_lock);
 	/*
@@ -3436,6 +3454,10 @@ SYSCALL_DEFINE2(swapon, const char __user *, specialfile, int, swap_flags)
 		error = -EBUSY;
 		goto bad_swap_unlock_inode;
 	}
+
+	error = setup_swap_min_order(si);
+	if (error)
+		goto bad_swap_unlock_inode;
 
 	/*
 	 * Read the swap header.

@@ -337,6 +337,7 @@ struct swap_info_struct {
 	struct work_struct discard_work; /* discard worker */
 	struct work_struct reclaim_work; /* reclaim worker */
 	struct list_head discard_clusters; /* discard clusters list */
+	unsigned int	min_folio_order; /* minimum folio order of swap cache */
 	struct plist_node avail_lists[]; /*
 					   * entries in swap_avail_heads, one
 					   * entry per node.
@@ -463,6 +464,7 @@ void free_pages_and_swap_cache(struct encoded_page **, int);
 extern atomic_long_t nr_swap_pages;
 extern long total_swap_pages;
 extern atomic_t nr_rotate_swap;
+extern unsigned int min_order_swap;
 extern bool has_usable_swap(void);
 
 /* Swap 50% full? Release swapcache more aggressively.. */
