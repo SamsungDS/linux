@@ -16,6 +16,9 @@ struct btrfs_bio;
 struct btrfs_fs_info;
 struct btrfs_inode;
 
+extern u64 bucket[25];
+extern u64 io_bucket[3];
+
 #define BTRFS_BIO_INLINE_CSUM_SIZE	64
 
 /*

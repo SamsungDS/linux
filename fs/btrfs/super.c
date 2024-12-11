@@ -2591,9 +2591,51 @@ static const struct init_sequence mod_init_seq[] = {
 
 static bool mod_init_result[ARRAY_SIZE(mod_init_seq)];
 
+u64 bucket[25];
+u64 io_bucket[3];
+
 static __always_inline void btrfs_exit_btrfs_fs(void)
 {
 	int i;
+
+	printk("I/O information:\n"
+		"dev stats: %llu,\n"
+		"root tree: %llu,\n"
+		"extent tree: %llu,\n"
+		"chunk tree: %llu,\n"
+		"dev tree: %llu,\n"
+		"FS tree: %llu,\n"
+		"root tree dir: %llu,\n"
+		"csum tree: %llu,\n"
+		"quota tree: %llu,\n"
+		"uuid tree: %llu,\n"
+		"free space tree: %llu,\n"
+		"block group tree: %llu,\n"
+		"raid stripe tree: %llu,\n"
+		"balance: %llu,\n"
+		"orphan: %llu,\n"
+		"tree log: %llu,\n"
+		"tree fixup log: %llu,\n"
+		"tree reloc: %llu,\n"
+		"data reloc tree: %llu,\n"
+		"extent csum: %llu,\n"
+		"free space: %llu,\n"
+		"free inode: %llu,\n"
+		"misc: %llu,\n"
+		"writes_with_priv_NULL: %llu,\n"
+		"writes_without_REQ_META:%llu,\n"
+		, bucket[0], bucket[1], bucket[2], bucket[3], bucket[4], bucket[5], bucket[6], bucket[7], bucket[8], bucket[9], bucket[10], bucket[11], bucket[12], bucket[13], bucket[14], bucket[15], bucket[16], bucket[17], bucket[18], bucket[19], bucket[20], bucket[21], bucket[22], bucket[23], bucket[24]);
+
+	printk("I/O topology:\n"
+		"single mirror:%llu,"
+		"raid:%llu,"
+		"multiple mirror:%llu\n", io_bucket[0], io_bucket[1], io_bucket[2]);
+	for (int i = 0;i < 25; i++) {
+		bucket[i] = 0;
+	}
+	for (int i = 0; i < 3; i++) {
+		io_bucket[i] = 0;
+	}
 
 	for (i = ARRAY_SIZE(mod_init_seq) - 1; i >= 0; i--) {
 		if (!mod_init_result[i])
@@ -2614,6 +2656,14 @@ static int __init init_btrfs_fs(void)
 {
 	int ret;
 	int i;
+
+	printk("%s:%s init all entries in bucket to 0\n", current->comm, __func__);
+	for (int i = 0;i < 25; i++) {
+		bucket[i] = 0;
+	}
+	for (int i = 0; i < 3; i++) {
+		io_bucket[i] = 0;
+	}
 
 	for (i = 0; i < ARRAY_SIZE(mod_init_seq); i++) {
 		ASSERT(!mod_init_result[i]);

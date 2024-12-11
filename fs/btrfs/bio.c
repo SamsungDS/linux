@@ -453,6 +453,8 @@ static void btrfs_submit_dev_bio(struct btrfs_device *dev, struct bio *bio)
 		submit_bio(bio);
 }
 
+void add_io_to_bucket(struct bio* bio);
+
 static void btrfs_submit_mirrored_bio(struct btrfs_io_context *bioc, int dev_nr)
 {
 	struct bio *orig_bio = bioc->orig_bio, *bio;
@@ -469,11 +471,100 @@ static void btrfs_submit_mirrored_bio(struct btrfs_io_context *bioc, int dev_nr)
 		bio->bi_end_io = btrfs_clone_write_end_io;
 	}
 
+	if (bio_op(orig_bio) == REQ_OP_WRITE) {
+			io_bucket[2] += bio->bi_iter.bi_size;
+			add_io_to_bucket(orig_bio);
+	}
 	bio->bi_private = &bioc->stripes[dev_nr];
 	bio->bi_iter.bi_sector = bioc->stripes[dev_nr].physical >> SECTOR_SHIFT;
 	bioc->stripes[dev_nr].bioc = bioc;
 	bioc->size = bio->bi_iter.bi_size;
 	btrfs_submit_dev_bio(bioc->stripes[dev_nr].dev, bio);
+}
+
+void add_io_to_bucket(struct bio* bio) {
+	unsigned int size = bio->bi_iter.bi_size;
+
+	if (!btrfs_bio(bio)->private) {
+		bucket[23] += size;
+	} else {
+		if (bio->bi_opf & REQ_META) {
+			u64 bucket_id = btrfs_header_owner(btrfs_bio(bio)->private);
+
+			if (bucket_id == BTRFS_DEV_STATS_OBJECTID) {
+				/* 0 */
+				bucket[0] += size;
+			} else if (bucket_id == BTRFS_ROOT_TREE_OBJECTID) {
+				/* 1 */
+				bucket[1] += size;
+			} else if (bucket_id == BTRFS_EXTENT_TREE_OBJECTID) {
+				/* 2 */
+				bucket[2] += size;
+			} else if (bucket_id == BTRFS_CHUNK_TREE_OBJECTID) {
+				/* 3 */
+				bucket[3] += size;
+			} else if (bucket_id == BTRFS_DEV_TREE_OBJECTID) {
+				/* 4 */
+				bucket[4] += size;
+			} else if (bucket_id == BTRFS_FS_TREE_OBJECTID) {
+				/* 5 */
+				bucket[5] += size;
+			} else if (bucket_id == BTRFS_ROOT_TREE_DIR_OBJECTID) {
+				/* 6 */
+				bucket[6] += size;
+			} else if (bucket_id == BTRFS_CSUM_TREE_OBJECTID) {
+				/* 7 */
+				bucket[7] += size;
+			} else if (bucket_id == BTRFS_QUOTA_TREE_OBJECTID) {
+				/* 8 */
+				bucket[8] += size;
+			} else if (bucket_id == BTRFS_UUID_TREE_OBJECTID) {
+				/* 9 */
+				bucket[9] += size;
+			} else if (bucket_id == BTRFS_FREE_SPACE_TREE_OBJECTID) {
+				/* 10 */
+				bucket[10] += size;
+			} else if (bucket_id == BTRFS_BLOCK_GROUP_TREE_OBJECTID) {
+				/* 11 */
+				bucket[11] += size;
+			} else if (bucket_id == BTRFS_RAID_STRIPE_TREE_OBJECTID) {
+				/* 12 */
+				bucket[12] += size;
+			} else if (bucket_id == BTRFS_BALANCE_OBJECTID) {
+				/* -4ULL */
+				bucket[13] += size;
+			} else if (bucket_id == BTRFS_ORPHAN_OBJECTID) {
+				/* -5ULL */
+				bucket[14] += size;
+			} else if (bucket_id == BTRFS_TREE_LOG_OBJECTID) {
+				/* -6ULL */
+				bucket[15] += size;
+			} else if (bucket_id == BTRFS_TREE_LOG_FIXUP_OBJECTID) {
+				/* -7ULL */
+				bucket[16] += size;
+			} else if (bucket_id == BTRFS_TREE_RELOC_OBJECTID) {
+				/* -8ULL */
+				bucket[17] += size;
+			} else if (bucket_id == BTRFS_DATA_RELOC_TREE_OBJECTID) {
+				/* -9ULL */
+				bucket[18] += size;
+			} else if (bucket_id == BTRFS_EXTENT_CSUM_OBJECTID) {
+				/* -10ULL */
+				bucket[19] += size;
+			} else if (bucket_id == BTRFS_FREE_SPACE_OBJECTID) {
+				/* -11ULL */
+				bucket[20] += size;
+			} else if (bucket_id == BTRFS_FREE_INO_OBJECTID) {
+				/* -12ULL */
+				bucket[21] += size;
+			} else {
+				bucket[22] += size;
+				printk("%s:%s going to misc group, group_id:%llu\n", current->comm, __func__, bucket_id);
+			}
+		} else {
+			bucket[24] += size;
+		}
+	}
 }
 
 static void btrfs_submit_bio(struct bio *bio, struct btrfs_io_context *bioc,
@@ -487,11 +578,19 @@ static void btrfs_submit_bio(struct bio *bio, struct btrfs_io_context *bioc,
 			btrfs_bio(bio)->orig_physical = smap->physical;
 		bio->bi_private = smap->dev;
 		bio->bi_end_io = btrfs_simple_end_io;
+		if (bio_op(bio) == REQ_OP_WRITE) {
+			io_bucket[0] += bio->bi_iter.bi_size;
+			add_io_to_bucket(bio);
+		}
 		btrfs_submit_dev_bio(smap->dev, bio);
 	} else if (bioc->map_type & BTRFS_BLOCK_GROUP_RAID56_MASK) {
 		/* Parity RAID write or read recovery. */
 		bio->bi_private = bioc;
 		bio->bi_end_io = btrfs_raid56_end_io;
+		if (bio_op(bio) == REQ_OP_WRITE) {
+			io_bucket[1] += bio->bi_iter.bi_size;
+			add_io_to_bucket(bio);
+		}
 		if (bio_op(bio) == REQ_OP_READ)
 			raid56_parity_recover(bio, bioc, mirror_num);
 		else
