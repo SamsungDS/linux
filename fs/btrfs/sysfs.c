@@ -372,6 +372,45 @@ static ssize_t supported_checksums_show(struct kobject *kobj,
 }
 BTRFS_ATTR(static_feature, supported_checksums, supported_checksums_show);
 
+static ssize_t tree_writes_show(struct kobject *kobj,
+					struct kobj_attribute *ka, char *buf)
+{
+	static char data[PAGE_SIZE] = {0};
+	int n;
+
+	n = snprintf(data, PAGE_SIZE, "dev stats: %llu\n"
+		"root: %llu\n"
+		"extent: %llu\n"
+		"chunk: %llu\n"
+		"dev: %llu\n"
+		"FS: %llu\n"
+		"root tree dir: %llu\n"
+		"csum: %llu\n"
+		"quota: %llu\n"
+		"uuid: %llu\n"
+		"free space: %llu\n"
+		"block group: %llu\n"
+		"raid stripe: %llu\n"
+		"balance: %llu\n"
+		"orphan: %llu\n"
+		"tree log: %llu\n"
+		"tree fixup log: %llu\n"
+		"tree reloc: %llu\n"
+		"data reloc tree: %llu\n"
+		"extent csum: %llu\n"
+		"free space: %llu\n"
+		"free inode: %llu\n"
+		"misc: %llu\n"
+		"priv_NULL: %llu\n"
+		"no REQ_META:%llu\n"
+		, bucket[0], bucket[1], bucket[2], bucket[3], bucket[4], bucket[5], bucket[6], bucket[7], bucket[8], bucket[9], bucket[10], bucket[11], bucket[12], bucket[13], bucket[14], bucket[15], bucket[16], bucket[17], bucket[18], bucket[19], bucket[20], bucket[21], bucket[22], bucket[23], bucket[24]);
+
+	printk("n = %u\n", n);
+	return sysfs_emit(buf, "%s", data);
+}
+
+BTRFS_ATTR(static_feature, tree_writes, tree_writes_show);
+
 static ssize_t send_stream_version_show(struct kobject *kobj,
 					struct kobj_attribute *ka, char *buf)
 {
@@ -444,6 +483,7 @@ static struct attribute *btrfs_supported_static_feature_attrs[] = {
 	BTRFS_ATTR_PTR(static_feature, acl),
 	BTRFS_ATTR_PTR(static_feature, rmdir_subvol),
 	BTRFS_ATTR_PTR(static_feature, supported_checksums),
+	BTRFS_ATTR_PTR(static_feature, tree_writes),
 	BTRFS_ATTR_PTR(static_feature, send_stream_version),
 	BTRFS_ATTR_PTR(static_feature, supported_rescue_options),
 	BTRFS_ATTR_PTR(static_feature, supported_sectorsizes),
