@@ -1486,6 +1486,22 @@ struct nvme_directive_cmd {
 	__u32			rsvd16[3];
 };
 
+struct nvme_cdq {
+	__u8			opcode;
+	__u8			flags;
+	__u16			command_id;
+	__u32			rsvd1[5];
+	__le64			prp1;
+	__u32			rsvd8[2];
+	__u8			sel;
+	__u8			rsvd10;
+	__le32			mos;
+	__le16			cdq_flags;
+	__le16			cqs;
+	__le32			cdqsize;
+	__u32			rsvd13[2];
+};
+
 /*
  * Fabrics subcommands.
  */
@@ -1888,6 +1904,7 @@ struct nvme_command {
 		struct nvmf_auth_receive_command auth_receive;
 		struct nvme_dbbuf dbbuf;
 		struct nvme_directive_cmd directive;
+		struct nvme_cdq cdq;
 	};
 };
 
