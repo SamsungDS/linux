@@ -1215,6 +1215,22 @@ static int adapter_delete_sq(struct nvme_dev *dev, u16 sqid)
 	return adapter_delete_queue(dev, nvme_admin_delete_sq, sqid);
 }
 
+static int __attribute__((unused))
+adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
+			     struct nvme_queue *nvmeq)
+{
+	struct nvme_command c = { };
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = 0x0;
+	c.cdq.mos = 0x0;
+	c.cdq.cdq_flags = cpu_to_le16(NVME_QUEUE_PHYS_CONTIG);
+	c.cdq.cqs = qid;
+	c.cdq.cdqsize = nvmeq->q_depth;
+	c.cdq.prp1 = nvmeq->cq_dma_addr;
+
+	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
+}
+
 static enum rq_end_io_ret abort_endio(struct request *req, blk_status_t error)
 {
 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
