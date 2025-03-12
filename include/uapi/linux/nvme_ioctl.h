@@ -92,6 +92,11 @@ struct nvme_uring_cmd {
 	__u32   rsvd2;
 };
 
+struct nvme_cdq_cmd {
+	__u32	argsize;
+	__u32	flags;
+};
+
 #define nvme_admin_cmd nvme_passthru_cmd
 
 #define NVME_IOCTL_ID		_IO('N', 0x40)
@@ -110,5 +115,8 @@ struct nvme_uring_cmd {
 #define NVME_URING_CMD_IO_VEC	_IOWR('N', 0x81, struct nvme_uring_cmd)
 #define NVME_URING_CMD_ADMIN	_IOWR('N', 0x82, struct nvme_uring_cmd)
 #define NVME_URING_CMD_ADMIN_VEC _IOWR('N', 0x83, struct nvme_uring_cmd)
+
+/* Controller Data Queue: */
+#define NVME_IOCTL_ADMIN_CDQ_ALLOC	_IOR('N', 0x84, struct nvme_cdq_cmd)
 
 #endif /* _UAPI_LINUX_NVME_IOCTL_H */
