@@ -160,9 +160,15 @@ struct nvme_dev {
 	dma_addr_t host_mem_descs_dma;
 	struct nvme_host_mem_buf_desc *host_mem_descs;
 	void **host_mem_desc_bufs;
+
 	unsigned int nr_allocated_queues;
 	unsigned int nr_write_queues;
 	unsigned int nr_poll_queues;
+
+	/* Controller Data Queue support */
+	u32 nr_cdqs;
+	u32 active_cdqs;
+	struct nvme_queue *cdq_queues;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
@@ -1343,6 +1349,30 @@ static int adapter_delete_sq(struct nvme_dev *dev, u16 sqid)
 	return adapter_delete_queue(dev, nvme_admin_delete_sq, sqid);
 }
 
+static int nvme_free_cdq(struct nvme_dev *dev)
+{
+	if (dev->active_cdqs > 0)
+		return -EINVAL;
+
+	if (dev->cdq_queues)
+		kfree(dev->cdq_queues);
+
+	dev->nr_cdqs = 0;
+	return 0;
+}
+
+static int nvme_alloc_cdq(struct nvme_dev *dev, u32 ncdqs)
+{
+
+	dev->cdq_queues = kcalloc(ncdqs, sizeof(*dev->cdq_queues), GFP_KERNEL);
+	if (!dev->cdq_queues)
+		return -ENOMEM;
+
+	dev->nr_cdqs = ncdqs;
+
+	return ncdqs;
+}
+
 static int __attribute__((unused))
 adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
 			     struct nvme_queue *nvmeq)
@@ -2328,6 +2358,41 @@ static ssize_t hmb_store(struct device *dev, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RW(hmb);
 
+static ssize_t nr_cdqs_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct nvme_dev *ndev = to_nvme_dev(dev_get_drvdata(dev));
+
+	return sysfs_emit(buf, "%d\n", ndev->nr_cdqs);
+}
+
+static ssize_t nr_cdqs_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct nvme_dev *ndev = to_nvme_dev(dev_get_drvdata(dev));
+	u32 new;
+	int ret;
+
+	if (kstrtou32(buf, 10, &new) < 0)
+		return -EINVAL;
+
+	if (new == ndev->nr_cdqs)
+		return count;
+
+	ret = nvme_free_cdq(ndev);
+	if (ret < 0)
+		return ret;
+
+	ret = nvme_alloc_cdq(ndev, new);
+	if (ret < 0)
+		return ret;
+
+	printk("Changing nr_cdqs from %d to %d\n", ndev->nr_cdqs, new);
+	return count;
+}
+
+static DEVICE_ATTR_RW(nr_cdqs);
+
 static umode_t nvme_pci_attrs_are_visible(struct kobject *kobj,
 		struct attribute *a, int n)
 {
@@ -2352,6 +2417,7 @@ static struct attribute *nvme_pci_attrs[] = {
 	&dev_attr_cmbloc.attr,
 	&dev_attr_cmbsz.attr,
 	&dev_attr_hmb.attr,
+	&dev_attr_nr_cdqs.attr,
 	NULL,
 };
 
