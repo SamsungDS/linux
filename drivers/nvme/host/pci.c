@@ -2180,6 +2180,7 @@ static ssize_t nr_cdqs_show(struct device *dev, struct device_attribute *attr,
 	return sysfs_emit(buf, "%d\n", ndev->nr_cdqs);
 }
 
+static int _nvme_pci_cdq_ctrl_init(struct nvme_dev *dev, u32 nr_cdqs);
 static ssize_t nr_cdqs_store(struct device *dev, struct device_attribute *attr,
 			 const char *buf, size_t count)
 {
@@ -2190,18 +2191,10 @@ static ssize_t nr_cdqs_store(struct device *dev, struct device_attribute *attr,
 	if (kstrtou32(buf, 10, &new) < 0)
 		return -EINVAL;
 
-	if (new == ndev->nr_cdqs)
-		return count;
-
-	ret = nvme_free_cdq(ndev);
+	ret = _nvme_pci_cdq_ctrl_init(ndev, new);
 	if (ret < 0)
 		return ret;
 
-	ret = nvme_alloc_cdq(ndev, new);
-	if (ret < 0)
-		return ret;
-
-	printk("Changing nr_cdqs from %d to %d\n", ndev->nr_cdqs, new);
 	return count;
 }
 
@@ -2916,6 +2909,40 @@ static bool nvme_pci_supports_pci_p2pdma(struct nvme_ctrl *ctrl)
 	return dma_pci_p2pdma_supported(dev->dev);
 }
 
+static int _nvme_pci_cdq_ctrl_init(struct nvme_dev *dev, u32 nr_cdqs)
+{
+	int ret;
+	if (nr_cdqs == dev->nr_cdqs)
+		return 0;
+
+	ret = nvme_free_cdq(dev);
+	if (ret < 0)
+		return ret;
+
+	ret = nvme_alloc_cdq(dev, nr_cdqs);
+	if (ret < 0)
+		return ret;
+
+	printk("Changing nr_cdqs from %d in %s\n", nr_cdqs, __func__);
+
+	return 0;
+
+}
+static int nvme_pci_cdq_ctrl_init(struct nvme_dev *dev,
+				  struct nvme_cdq_mgmt *cdq_mgmt)
+{
+	return _nvme_pci_cdq_ctrl_init(dev, cdq_mgmt->cdq_alloc.nr_cdqs);
+}
+
+static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
+{
+	struct nvme_dev *dev = to_nvme_dev(ctrl);
+	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ALLOC)
+		return nvme_pci_cdq_ctrl_init(dev, cdq_mgmt);
+
+	return -EINVAL;
+}
+
 static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.name			= "pcie",
 	.module			= THIS_MODULE,
@@ -2929,6 +2956,7 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.get_address		= nvme_pci_get_address,
 	.print_device_info	= nvme_pci_print_device_info,
 	.supports_pci_p2pdma	= nvme_pci_supports_pci_p2pdma,
+	.manage_cdq_queues	= nvme_pci_cdq_mgmt,
 };
 
 static int nvme_dev_map(struct nvme_dev *dev)
