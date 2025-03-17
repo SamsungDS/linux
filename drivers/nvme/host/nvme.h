@@ -516,6 +516,17 @@ static inline bool nvme_ns_has_pi(struct nvme_ns *ns)
 	return ns->pi_type && ns->ms == ns->pi_size;
 }
 
+struct nvme_cdq_mgmt {
+	unsigned int op_type;
+#define NVME_CDQ_CTRL_ALLOC		(1 << 0)
+	union {
+		struct {
+			u32 nr_cdqs;
+		} cdq_alloc;
+
+	};
+};
+
 struct nvme_ctrl_ops {
 	const char *name;
 	struct module *module;
@@ -535,6 +546,7 @@ struct nvme_ctrl_ops {
 	int (*get_address)(struct nvme_ctrl *ctrl, char *buf, int size);
 	void (*print_device_info)(struct nvme_ctrl *ctrl);
 	bool (*supports_pci_p2pdma)(struct nvme_ctrl *ctrl);
+	int (*manage_cdq_queues)(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt);
 };
 
 /*
