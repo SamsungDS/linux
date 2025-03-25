@@ -113,6 +113,10 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 static void nvme_delete_io_queues(struct nvme_dev *dev);
 static void nvme_update_attrs(struct nvme_dev *dev);
 
+struct cdq_nvme_queue {
+	struct nvme_dev *dev;
+	void *entries;
+};
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
@@ -168,7 +172,7 @@ struct nvme_dev {
 	/* Controller Data Queue support */
 	u32 nr_cdqs;
 	u32 active_cdqs;
-	struct nvme_queue *cdq_queues;
+	struct cdq_nvme_queue *cdq_queues;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
