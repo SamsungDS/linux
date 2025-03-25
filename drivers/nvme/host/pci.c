@@ -2938,11 +2938,25 @@ static int nvme_pci_cdq_ctrl_init(struct nvme_dev *dev,
 	return _nvme_pci_cdq_ctrl_init(dev, cdq_mgmt->cdq_alloc.nr_cdqs);
 }
 
+static int nvme_pci_cdq_ctrl_entry_alloc(struct nvme_dev *dev,
+					 struct nvme_cdq_mgmt * cdq_mgmt)
+{
+	dev->cdq_queues->entries = kcalloc(cdq_mgmt->cdq_entry_alloc.entry_nr,
+					   cdq_mgmt->cdq_entry_alloc.entry_nbyte,
+					   GFP_KERNEL);
+	if (!dev->cdq_queues->entries)
+		return -ENOMEM;
+
+	return 0;
+}
+
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
 {
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
 	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ALLOC)
 		return nvme_pci_cdq_ctrl_init(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ENTRY_ALLOC)
+		return nvme_pci_cdq_ctrl_entry_alloc(dev, cdq_mgmt);
 
 	return -EINVAL;
 }
