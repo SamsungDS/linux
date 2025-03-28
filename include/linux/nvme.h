@@ -1197,7 +1197,6 @@ enum nvme_admin_opcode {
 		nvme_admin_opcode_name(nvme_admin_get_lba_status))
 
 enum {
-	NVME_QUEUE_PHYS_CONTIG	= (1 << 0),
 	NVME_CQ_IRQ_ENABLED	= (1 << 1),
 	NVME_SQ_PRIO_URGENT	= (0 << 1),
 	NVME_SQ_PRIO_HIGH	= (1 << 1),
@@ -1415,9 +1414,15 @@ struct nvme_cdq {
 	__u32			rsvd1[5];
 	__le64			prp1;
 	__u32			rsvd8[2];
+#define NVME_CDQ_OPS_CREATE	0x0
+#define NVME_CDQ_OPS_DELETE	0x1
 	__u8			sel;
 	__u8			rsvd10;
-	__le32			mos;
+#define NVME_CDQ_MOS_CREATE_QT_MASK	0x00ff
+#define NVME_CDQ_MOS_CREATE_QT_UDMQ	0x0000
+	__le16			mos;
+#define NVME_CDQ_CFG_PC_DISCONT		0x0000
+#define NVME_CDQ_CFG_PC_CONT		(1 << 0)
 	__le16			cdq_flags;
 	__le16			cqs;
 	__le32			cdqsize;

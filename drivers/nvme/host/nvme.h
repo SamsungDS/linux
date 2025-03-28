@@ -521,6 +521,7 @@ struct nvme_cdq_mgmt {
 	union {
 #define NVME_CDQ_CTRL_ALLOC		(1 << 0)
 #define NVME_CDQ_CTRL_ENTRY_ALLOC	(1 << 1)
+#define NVME_CDQ_CMD_CREATE		(1 << 2)
 		struct {
 			u32 nr_cdqs;
 		} cdq_alloc;
@@ -528,6 +529,9 @@ struct nvme_cdq_mgmt {
 			u32 entry_nr;
 			u32 entry_nbyte;
 		} cdq_entry_alloc;
+		struct {
+			u16 cntlid;
+		} cdq_cmd_create;
 	};
 };
 

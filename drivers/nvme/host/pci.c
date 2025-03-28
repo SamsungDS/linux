@@ -1249,22 +1249,6 @@ static int nvme_alloc_cdq(struct nvme_dev *dev, u32 ncdqs)
 	return ncdqs;
 }
 
-static int __attribute__((unused))
-adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
-			     struct nvme_queue *nvmeq)
-{
-	struct nvme_command c = { };
-	c.cdq.opcode = nvme_admin_cdq;
-	c.cdq.sel = 0x0;
-	c.cdq.mos = 0x0;
-	c.cdq.cdq_flags = cpu_to_le16(NVME_QUEUE_PHYS_CONTIG);
-	c.cdq.cqs = qid;
-	c.cdq.cdqsize = nvmeq->q_depth;
-	c.cdq.prp1 = nvmeq->cq_dma_addr;
-
-	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
-}
-
 static enum rq_end_io_ret abort_endio(struct request *req, blk_status_t error)
 {
 	struct nvme_queue *nvmeq = req->mq_hctx->driver_data;
@@ -2950,6 +2934,51 @@ static int nvme_pci_cdq_ctrl_entry_alloc(struct nvme_dev *dev,
 	return 0;
 }
 
+static int __attribute__((unused))
+adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
+			     struct nvme_queue *nvmeq)
+{
+	struct nvme_command c = { };
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = 0x0;
+	c.cdq.mos = 0x0;
+//	c.cdq.cdq_flags = cpu_to_le16(NVME_QUEUE_PHYS_CONTIG);
+	c.cdq.cqs = qid;
+	c.cdq.cdqsize = nvmeq->q_depth;
+	c.cdq.prp1 = nvmeq->cq_dma_addr;
+
+	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
+}
+
+
+static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
+				   struct nvme_cdq_mgmt * cdq_mgmt)
+{
+	struct nvme_command c = { };
+
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = NVME_CDQ_OPS_CREATE;
+
+	/* create a User Data Migration Queue */
+	c.cdq.mos |= cpu_to_le16(NVME_CDQ_MOS_CREATE_QT_UDMQ);
+
+	c.cdq.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
+
+	c.cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_cmd_create.cntlid);
+
+
+	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
+
+	//struct nvme_queue *nvmeq
+	//struct nvme_cdq cdq_cmd = {};
+	//struct nvme_command cdq_cmd = { };
+	//c.cdq.cqs = qid;
+	//c.cdq.cdqsize = nvmeq->q_depth;
+	//c.cdq.prp1 = nvmeq->cq_dma_addr;
+
+
+}
+
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
 {
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
@@ -2957,6 +2986,8 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_ctrl_init(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ENTRY_ALLOC)
 		return nvme_pci_cdq_ctrl_entry_alloc(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
+		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
 
 	return -EINVAL;
 }
