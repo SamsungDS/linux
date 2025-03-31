@@ -1197,6 +1197,7 @@ enum nvme_admin_opcode {
 		nvme_admin_opcode_name(nvme_admin_get_lba_status))
 
 enum {
+	NVME_QUEUE_PHYS_CONTIG	= (1 << 0),
 	NVME_CQ_IRQ_ENABLED	= (1 << 1),
 	NVME_SQ_PRIO_URGENT	= (0 << 1),
 	NVME_SQ_PRIO_HIGH	= (1 << 1),
