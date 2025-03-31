@@ -555,18 +555,15 @@ struct nvme_cdq_mgmt {
 	unsigned int op_type;
 	union {
 #define NVME_CDQ_CTRL_ALLOC		(1 << 0)
-#define NVME_CDQ_CTRL_ENTRY_ALLOC	(1 << 1)
-#define NVME_CDQ_CMD_CREATE		(1 << 2)
+#define NVME_CDQ_CMD_CREATE		(1 << 1)
 		struct {
 			u32 nr_cdqs;
 		} cdq_alloc;
 		struct {
 			u32 entry_nr;
 			u32 entry_nbyte;
-		} cdq_entry_alloc;
-		struct {
 			u16 cntlid;
-		} cdq_cmd_create;
+		} cdq_create;
 	};
 };
 
