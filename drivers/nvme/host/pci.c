@@ -2988,6 +2988,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 
 	c.cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_create.cntlid);
 
+	c.cdq.cdqsize = cdq_mgmt->cdq_create.entry_nbyte << cdq_mgmt->cdq_create.entry_nr;
 
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 
