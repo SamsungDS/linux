@@ -115,6 +115,7 @@ static void nvme_update_attrs(struct nvme_dev *dev);
 struct cdq_nvme_queue {
 	struct nvme_dev *dev;
 	void *entries;
+	dma_addr_t entries_dma_addr;
 	unsigned cdq_id;
 	u16 cntlid;
 };
@@ -2925,8 +2926,8 @@ static int nvme_pci_cdq_ctrl_init(struct nvme_dev *dev,
 }
 
 static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
-					 struct cdq_nvme_queue ** cdq,
-					 u32 entry_nr, u32 entry_nbyte)
+				    struct cdq_nvme_queue ** cdq,
+				    u32 entry_nr, u32 entry_nbyte)
 {
 	struct cdq_nvme_queue *curr_cdq;
 	for (int i = 0; i < dev->nr_cdqs; ++i) {
@@ -2934,7 +2935,10 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 		if (curr_cdq)
 			continue;
 
-		curr_cdq->entries = kcalloc(entry_nr, entry_nbyte, GFP_KERNEL);
+		curr_cdq->entries = dma_alloc_coherent(dev->dev,
+						       entry_nr * entry_nbyte,
+						       &curr_cdq->entries_dma_addr,
+						       GFP_KERNEL);
 		if (!curr_cdq->entries)
 			return -ENOMEM;
 
@@ -2989,6 +2993,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	c.cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_create.cntlid);
 
 	c.cdq.cdqsize = cdq_mgmt->cdq_create.entry_nbyte << cdq_mgmt->cdq_create.entry_nr;
+	c.cdq.prp1 = cdq->entries_dma_addr;
 
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 
