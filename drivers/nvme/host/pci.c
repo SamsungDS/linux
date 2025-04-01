@@ -3140,7 +3140,7 @@ static int _nvme_pci_cdq_ctrl_init(struct nvme_dev *dev, u32 nr_cdqs)
 	if (ret < 0)
 		return ret;
 
-	printk("Changing nr_cdqs from %d in %s\n", nr_cdqs, __func__);
+	printk("Changing nr_cdqs to %d in %s\n", nr_cdqs, __func__);
 
 	return 0;
 
@@ -3158,7 +3158,7 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 	struct cdq_nvme_queue *curr_cdq;
 	for (int i = 0; i < dev->nr_cdqs; ++i) {
 		curr_cdq = dev->cdq_queues + i;
-		if (curr_cdq)
+		if (curr_cdq->entries != NULL)
 			continue;
 
 		curr_cdq->entries = dma_alloc_coherent(dev->dev,

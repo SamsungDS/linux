@@ -95,6 +95,9 @@ struct nvme_uring_cmd {
 struct nvme_cdq_cmd {
 	__u32	argsize;
 	__u32	flags;
+	__u32	entry_nr;
+	__u32	entry_nbyte;
+	__u16	cntlid;
 };
 
 #define nvme_admin_cmd nvme_passthru_cmd
