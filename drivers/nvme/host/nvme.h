@@ -517,10 +517,10 @@ static inline bool nvme_ns_has_pi(struct nvme_ns *ns)
 }
 
 struct nvme_cdq_mgmt {
-	unsigned int op_type;
-	union {
 #define NVME_CDQ_CTRL_ALLOC		(1 << 0)
 #define NVME_CDQ_CMD_CREATE		(1 << 1)
+	unsigned int op_type;
+	union {
 		struct {
 			u32 nr_cdqs;
 		} cdq_alloc;

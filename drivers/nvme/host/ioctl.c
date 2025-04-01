@@ -437,6 +437,7 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
 		bool open_for_write)
 {
+	struct nvme_cdq_mgmt cdq_mgmt = {};
 	struct nvme_cdq_cmd cmd;
 	int status = 0;
 
@@ -444,7 +445,21 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		return -EFAULT;
 
 	/* 1. Create the CDQ in the ioctl dev */
+	cdq_mgmt.op_type = NVME_CDQ_CTRL_ALLOC;
+#define NVME_CDQ_CTRL_ALLOC_NR_CDQS	2 /* For now just 2 queues */
+	cdq_mgmt.cdq_alloc.nr_cdqs = NVME_CDQ_CTRL_ALLOC_NR_CDQS;
+	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+	if (status)
+		return status;
 
+	memset(&cdq_mgmt, 0, sizeof(cdq_mgmt));
+	cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
+	cdq_mgmt.cdq_create.cntlid = cmd.cntlid;
+	cdq_mgmt.cdq_create.entry_nbyte = cmd.entry_nbyte;
+	cdq_mgmt.cdq_create.entry_nr = cmd.entry_nr;
+	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+	if (status)
+		return status;
 	/* 2. Connect entries with an FD */
 
 	/* 3. Send a command throught the admin queue of the ioctl dev */
@@ -452,8 +467,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	/* 4. prep the response to user */
 
 	/* 5. return response */
-	//status = nvme_alloc_cdq(ctrl, 0, cdq_queue);
-
 	return status;
 }
 
@@ -1002,6 +1015,8 @@ long nvme_dev_ioctl(struct file *file, unsigned int cmd,
 			return -EACCES;
 		nvme_queue_scan(ctrl);
 		return 0;
+	case NVME_IOCTL_ADMIN_CDQ_ALLOC:
+		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return -ENOTTY;
 	}
