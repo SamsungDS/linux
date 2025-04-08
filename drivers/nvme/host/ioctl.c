@@ -433,18 +433,11 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
-static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
-		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
-		bool open_for_write)
+static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl, const struct nvme_cdq_cmd * cmd)
 {
 	struct nvme_cdq_mgmt cdq_mgmt = {};
-	struct nvme_cdq_cmd cmd;
 	int status = 0;
 
-	if (copy_from_user(&cmd, ucmd, sizeof(cmd)))
-		return -EFAULT;
-
-	/* 1. Create the CDQ in the ioctl dev */
 	cdq_mgmt.op_type = NVME_CDQ_CTRL_ALLOC;
 #define NVME_CDQ_CTRL_ALLOC_NR_CDQS	2 /* For now just 2 queues */
 	cdq_mgmt.cdq_alloc.nr_cdqs = NVME_CDQ_CTRL_ALLOC_NR_CDQS;
@@ -454,12 +447,28 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 
 	memset(&cdq_mgmt, 0, sizeof(cdq_mgmt));
 	cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
-	cdq_mgmt.cdq_create.cntlid = cmd.cntlid;
-	cdq_mgmt.cdq_create.entry_nbyte = cmd.entry_nbyte;
-	cdq_mgmt.cdq_create.entry_nr = cmd.entry_nr;
-	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-	if (status)
-		return status;
+	cdq_mgmt.cdq_create.cntlid = cmd->cntlid;
+	cdq_mgmt.cdq_create.entry_nbyte = cmd->entry_nbyte;
+	cdq_mgmt.cdq_create.entry_nr = cmd->entry_nr;
+	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+}
+
+static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
+		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
+		bool open_for_write)
+{
+	struct nvme_cdq_cmd cmd;
+	int status = 0;
+
+	if (copy_from_user(&cmd, ucmd, sizeof(cmd)))
+		return -EFAULT;
+
+	switch (cmd.flags) {
+	case NVME_CDQ_ADM_FLAGS_ALLOC: /* 1. Create the CDQ in the ioctl dev */
+		return nvme_user_cdq_alloc(ctrl, &cmd);
+	case NVME_CDQ_ADM_FLAGS_TR_SEND:
+		return -EPERM;
+	}
 	/* 2. Connect entries with an FD */
 
 	/* 3. Send a command throught the admin queue of the ioctl dev */
@@ -677,7 +686,7 @@ static int nvme_uring_cmd_io(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 static bool is_ctrl_ioctl(unsigned int cmd)
 {
 	if (cmd == NVME_IOCTL_ADMIN_CMD || cmd == NVME_IOCTL_ADMIN64_CMD ||
-	    cmd == NVME_IOCTL_ADMIN_CDQ_ALLOC)
+	    cmd == NVME_IOCTL_ADMIN_CDQ)
 		return true;
 	if (is_sed_ioctl(cmd))
 		return true;
@@ -692,7 +701,7 @@ static int nvme_ctrl_ioctl(struct nvme_ctrl *ctrl, unsigned int cmd,
 		return nvme_user_cmd(ctrl, NULL, argp, 0, open_for_write);
 	case NVME_IOCTL_ADMIN64_CMD:
 		return nvme_user_cmd64(ctrl, NULL, argp, 0, open_for_write);
-	case NVME_IOCTL_ADMIN_CDQ_ALLOC:
+	case NVME_IOCTL_ADMIN_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return sed_ioctl(ctrl->opal_dev, cmd, argp);
@@ -1015,7 +1024,7 @@ long nvme_dev_ioctl(struct file *file, unsigned int cmd,
 			return -EACCES;
 		nvme_queue_scan(ctrl);
 		return 0;
-	case NVME_IOCTL_ADMIN_CDQ_ALLOC:
+	case NVME_IOCTL_ADMIN_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return -ENOTTY;
