@@ -95,6 +95,8 @@ struct nvme_uring_cmd {
 struct nvme_cdq_cmd {
 	__u32	argsize;
 	__u32	flags;
+#define NVME_CDQ_ADM_FLAGS_ALLOC	(1 << 1)
+#define NVME_CDQ_ADM_FLAGS_TR_SEND	(1 << 2)
 	__u32	entry_nr;
 	__u32	entry_nbyte;
 	__u16	cntlid;
@@ -120,6 +122,6 @@ struct nvme_cdq_cmd {
 #define NVME_URING_CMD_ADMIN_VEC _IOWR('N', 0x83, struct nvme_uring_cmd)
 
 /* Controller Data Queue: */
-#define NVME_IOCTL_ADMIN_CDQ_ALLOC	_IOR('N', 0x84, struct nvme_cdq_cmd)
+#define NVME_IOCTL_ADMIN_CDQ	_IOR('N', 0x84, struct nvme_cdq_cmd)
 
 #endif /* _UAPI_LINUX_NVME_IOCTL_H */
