@@ -3186,7 +3186,7 @@ adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
 	c.cdq.sel = 0x0;
 	c.cdq.mos = 0x0;
 //	c.cdq.cdq_flags = cpu_to_le16(NVME_QUEUE_PHYS_CONTIG);
-	c.cdq.cqs = qid;
+	c.cdq.create_cdq.cqs = qid;
 	c.cdq.cdqsize = nvmeq->q_depth;
 	c.cdq.prp1 = nvmeq->cq_dma_addr;
 
@@ -3215,9 +3215,9 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	/* create a User Data Migration Queue */
 	c.cdq.mos |= cpu_to_le16(NVME_CDQ_MOS_CREATE_QT_UDMQ);
 
-	c.cdq.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
+	c.cdq.create_cdq.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
 
-	c.cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_create.cntlid);
+	c.cdq.create_cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_create.cntlid);
 
 	c.cdq.cdqsize = cdq_mgmt->cdq_create.entry_nbyte << cdq_mgmt->cdq_create.entry_nr;
 	c.cdq.prp1 = cdq->entries_dma_addr;
