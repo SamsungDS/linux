@@ -97,11 +97,21 @@ struct nvme_cdq_cmd {
 	__u32	flags;
 #define NVME_CDQ_ADM_FLAGS_ALLOC	(1 << 1)
 #define NVME_CDQ_ADM_FLAGS_TR_SEND	(1 << 2)
-	__u32	entry_nr;
-	__u32	entry_nbyte;
-	__u16	cntlid;
-	/* ID given by controller */
-	__u16	cdqid;
+	union {
+		struct {
+			__u32	entry_nr;
+			__u32	entry_nbyte;
+			__u16	cntlid;
+			/* ID given by controller */
+			__u16	cdqid;
+		} alloc;
+		struct {
+			__u8	action;
+#define NVME_CDQ_ADM_FLAGS_TR_SEND_START	0x1
+#define NVME_CDQ_ADM_FLAGS_TR_SEND_STOP		0x0
+			__u16	cdqid;
+		} tr_send;
+	};
 };
 
 #define nvme_admin_cmd nvme_passthru_cmd

@@ -449,9 +449,9 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 
 	memset(&cdq_mgmt, 0, sizeof(cdq_mgmt));
 	cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
-	cdq_mgmt.cdq_create.cntlid = cmd->cntlid;
-	cdq_mgmt.cdq_create.entry_nbyte = cmd->entry_nbyte;
-	cdq_mgmt.cdq_create.entry_nr = cmd->entry_nr;
+	cdq_mgmt.cdq_create.cntlid = cmd->alloc.cntlid;
+	cdq_mgmt.cdq_create.entry_nbyte = cmd->alloc.entry_nbyte;
+	cdq_mgmt.cdq_create.entry_nr = cmd->alloc.entry_nr;
 	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 
 	if (status)
@@ -460,11 +460,29 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 	 * 2. Connect entries with an FD
 	 */
 
-	cmd->cdqid = cdq_mgmt.cdq_create.cdqid;
+	cmd->alloc.cdqid = cdq_mgmt.cdq_create.cdqid;
 	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 		return -EFAULT;
 
 	return status;
+}
+
+static int nvme_user_cdq_track_send(struct nvme_ctrl *ctrl,
+				    const struct nvme_cdq_cmd * cmd)
+{
+	struct nvme_command c = { };
+	c.cdq.opcode = nvme_admin_track_send;
+	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
+	if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_START)
+		c.cdq.mos = cpu_to_le16(NVME_CDQ_MOS_LACT_START_LOG);
+	else if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_STOP)
+		c.cdq.mos = cpu_to_le16(NVME_CDQ_MOS_LACT_STOP_LOG);
+	else
+		return -EINVAL;
+
+	c.cdq.track_send.cdq_id = cpu_to_le16(cmd->tr_send.cdqid);
+
+	return nvme_submit_sync_cmd(ctrl->admin_q, &c, NULL, 0);
 }
 
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
@@ -472,7 +490,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		bool open_for_write)
 {
 	struct nvme_cdq_cmd cmd;
-	int status = 0;
 
 	if (copy_from_user(&cmd, ucmd, sizeof(cmd)))
 		return -EFAULT;
@@ -481,16 +498,10 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	case NVME_CDQ_ADM_FLAGS_ALLOC: /* 1. Create the CDQ in the ioctl dev */
 		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_TR_SEND:
-		return -EPERM;
+		return nvme_user_cdq_track_send(ctrl, &cmd);
 	}
-	/* 2. Connect entries with an FD */
 
-	/* 3. Send a command throught the admin queue of the ioctl dev */
-
-	/* 4. prep the response to user */
-
-	/* 5. return response */
-	return status;
+	return -EPERM;
 }
 
 struct nvme_uring_data {
