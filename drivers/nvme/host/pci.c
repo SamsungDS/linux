@@ -2983,7 +2983,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	cdq->cntlid = cdq_mgmt->cdq_create.cntlid;
 
 	c.cdq.opcode = nvme_admin_cdq;
-	c.cdq.sel = NVME_CDQ_OPS_CREATE;
+	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
 
 	/* create a User Data Migration Queue */
 	c.cdq.mos |= cpu_to_le16(NVME_CDQ_MOS_CREATE_QT_UDMQ);
