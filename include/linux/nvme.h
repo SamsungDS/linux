@@ -1494,8 +1494,8 @@ struct nvme_cdq {
 	__u32			rsvd1[5];
 	__le64			prp1;
 	__u32			rsvd8[2];
-#define NVME_CDQ_OPS_CREATE	0x0
-#define NVME_CDQ_OPS_DELETE	0x1
+#define NVME_CDQ_SEL_CREATE_CDQ		0x0
+#define NVME_CDQ_SEL_DELETE_CDQ		0x1
 	__u8			sel;
 	__u8			rsvd10;
 #define NVME_CDQ_MOS_CREATE_QT_MASK	0x00ff
