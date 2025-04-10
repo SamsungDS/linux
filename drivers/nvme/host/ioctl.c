@@ -433,7 +433,9 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
-static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl, const struct nvme_cdq_cmd * cmd)
+static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
+			       struct nvme_cdq_cmd * cmd,
+			       struct nvme_cdq_cmd __user *ucmd)
 {
 	struct nvme_cdq_mgmt cdq_mgmt = {};
 	int status = 0;
@@ -450,7 +452,19 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl, const struct nvme_cdq_cmd
 	cdq_mgmt.cdq_create.cntlid = cmd->cntlid;
 	cdq_mgmt.cdq_create.entry_nbyte = cmd->entry_nbyte;
 	cdq_mgmt.cdq_create.entry_nr = cmd->entry_nr;
-	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+
+	if (status)
+		return status;
+	/*
+	 * 2. Connect entries with an FD
+	 */
+
+	cmd->cdqid = cdq_mgmt.cdq_create.cdqid;
+	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
+		return -EFAULT;
+
+	return status;
 }
 
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
@@ -465,7 +479,7 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 
 	switch (cmd.flags) {
 	case NVME_CDQ_ADM_FLAGS_ALLOC: /* 1. Create the CDQ in the ioctl dev */
-		return nvme_user_cdq_alloc(ctrl, &cmd);
+		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_TR_SEND:
 		return -EPERM;
 	}

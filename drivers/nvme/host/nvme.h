@@ -528,6 +528,7 @@ struct nvme_cdq_mgmt {
 			u32 entry_nr;
 			u32 entry_nbyte;
 			u16 cntlid;
+			u16 cdqid;
 		} cdq_create;
 	};
 };
