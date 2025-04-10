@@ -3200,6 +3200,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	int ret;
 	struct nvme_command c = { };
 	struct cdq_nvme_queue * cdq;
+	union nvme_result result = { };
 
 	ret = nvme_pci_cdq_entry_alloc(dev, &cdq,
 				       cdq_mgmt->cdq_create.entry_nr,
@@ -3221,14 +3222,13 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	c.cdq.cdqsize = cdq_mgmt->cdq_create.entry_nbyte << cdq_mgmt->cdq_create.entry_nr;
 	c.cdq.prp1 = cdq->entries_dma_addr;
 
-	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
+	ret =  __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
+	if (ret)
+		return ret;
 
-	//struct nvme_queue *nvmeq
-	//struct nvme_cdq cdq_cmd = {};
-	//struct nvme_command cdq_cmd = { };
-	//c.cdq.cqs = qid;
-	//c.cdq.cdqsize = nvmeq->q_depth;
-	//c.cdq.prp1 = nvmeq->cq_dma_addr;
+	cdq_mgmt->cdq_create.cdqid = result.u16;
+
+	return ret;
 }
 
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
