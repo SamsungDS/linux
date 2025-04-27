@@ -519,6 +519,7 @@ static inline bool nvme_ns_has_pi(struct nvme_ns *ns)
 struct nvme_cdq_mgmt {
 #define NVME_CDQ_CTRL_ALLOC		(1 << 0)
 #define NVME_CDQ_CMD_CREATE		(1 << 1)
+#define NVME_CDQ_CMD_TRACK_SEND		(1 << 2)
 	unsigned int op_type;
 	union {
 		struct {
@@ -530,6 +531,10 @@ struct nvme_cdq_mgmt {
 			u16 cntlid;
 			u16 cdqid;
 		} cdq_create;
+		struct {
+			u16 cdqid;
+			u8 action;
+		} tr_send;
 	};
 };
 

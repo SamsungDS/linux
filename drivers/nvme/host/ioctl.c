@@ -470,19 +470,19 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 static int nvme_user_cdq_track_send(struct nvme_ctrl *ctrl,
 				    const struct nvme_cdq_cmd * cmd)
 {
-	struct nvme_command c = { };
-	c.cdq.opcode = nvme_admin_track_send;
-	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
+	struct nvme_cdq_mgmt cdq_mgmt = {};
+
+	cdq_mgmt.op_type = NVME_CDQ_CMD_TRACK_SEND;
+	cdq_mgmt.tr_send.cdqid = cmd->tr_send.cdqid;
+
 	if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_START)
-		c.cdq.mos = cpu_to_le16(NVME_CDQ_MOS_LACT_START_LOG);
+		cdq_mgmt.tr_send.action = NVME_CDQ_MOS_LACT_START_LOG;
 	else if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_STOP)
-		c.cdq.mos = cpu_to_le16(NVME_CDQ_MOS_LACT_STOP_LOG);
+		cdq_mgmt.tr_send.action = NVME_CDQ_MOS_LACT_STOP_LOG;
 	else
 		return -EINVAL;
 
-	c.cdq.track_send.cdq_id = cpu_to_le16(cmd->tr_send.cdqid);
-
-	return nvme_submit_sync_cmd(ctrl->admin_q, &c, NULL, 0);
+	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 }
 
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
