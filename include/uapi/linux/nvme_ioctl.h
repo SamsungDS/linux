@@ -102,7 +102,7 @@ struct nvme_cdq_cmd {
 			__u32	entry_nr;
 			__u32	entry_nbyte;
 			__u16	cntlid;
-			/* ID given by controller */
+			/* internal kernel array offset */
 			__u16	cdqid;
 		} alloc;
 		struct {

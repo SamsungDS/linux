@@ -117,6 +117,7 @@ struct cdq_nvme_queue {
 	struct nvme_dev *dev;
 	void *entries;
 	dma_addr_t entries_dma_addr;
+	/* Value is in Little endian */
 	unsigned cdq_id;
 	u16 cntlid;
 };
@@ -3168,6 +3169,7 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 		if (!curr_cdq->entries)
 			return -ENOMEM;
 
+		/* cdq_id is the array offset */
 		curr_cdq->cdq_id = i;
 		*cdq = curr_cdq;
 
@@ -3226,9 +3228,27 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	if (ret)
 		return ret;
 
-	cdq_mgmt->cdq_create.cdqid = result.u16;
+	/*
+	 * CDQ id returned to the user is the offset in the array
+	 * CDQ id returned by the controller is kept in *cdq
+	 */
+	cdq_mgmt->cdq_create.cdqid = cdq->cdq_id;
+	cdq->cdq_id = result.u16;
 
 	return ret;
+}
+
+static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
+				   struct nvme_cdq_mgmt * cdq_mgmt)
+{
+	struct nvme_command c = { };
+	c.cdq.opcode = nvme_admin_track_send;
+	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
+	c.cdq.mos = cpu_to_le16(cdq_mgmt->tr_send.action);
+
+	c.cdq.track_send.cdq_id = (dev->cdq_queues + cdq_mgmt->tr_send.cdqid)->cdq_id;
+
+	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 }
 
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
@@ -3236,6 +3256,8 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
 	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ALLOC)
 		return nvme_pci_cdq_ctrl_init(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CMD_TRACK_SEND)
+		return nvme_pci_cdq_track_send(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
 		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
 
