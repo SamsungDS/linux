@@ -116,8 +116,7 @@ struct cdq_nvme_queue {
 	struct nvme_dev *dev;
 	void *entries;
 	dma_addr_t entries_dma_addr;
-	/* Value is in Little endian */
-	unsigned cdq_id;
+	__le16 cdq_id;
 	u16 cntlid;
 };
 /*
@@ -1229,14 +1228,46 @@ static int adapter_delete_sq(struct nvme_dev *dev, u16 sqid)
 	return adapter_delete_queue(dev, nvme_admin_delete_sq, sqid);
 }
 
+static struct cdq_nvme_queue *nvme_get_cdq(struct nvme_dev *dev, u32 cdqid)
+{
+	if (!dev->cdq_queues)
+		return NULL;
+	return dev->cdq_queues + cdqid;
+}
+
+static int nvme_get_cdq_idx(const struct nvme_dev *dev, const struct cdq_nvme_queue* cdq)
+{
+	int id = cdq - dev->cdq_queues;
+	if (id > dev->nr_cdqs)
+		return -EINVAL;
+	return id;
+}
+
+static struct cdq_nvme_queue *nvme_get_first_empty_cdq(struct nvme_dev *dev)
+{
+	struct cdq_nvme_queue* curr_cdq;
+	if (!dev->cdq_queues)
+		return NULL;
+	for (int i = 0; i < dev->nr_cdqs; ++i) {
+		curr_cdq = dev->cdq_queues + i;
+		if (!curr_cdq->entries)
+			return  curr_cdq;
+	}
+
+	return NULL;
+}
+
 static int nvme_free_cdq(struct nvme_dev *dev)
 {
 	if (dev->active_cdqs > 0)
 		return -EINVAL;
 
-	if (dev->cdq_queues)
-		kfree(dev->cdq_queues);
+	for (int i = 0; i < dev->nr_cdqs; ++i) {
+		if (nvme_get_cdq(dev, i)->entries)
+			return -EINVAL;
+	}
 
+	kfree(dev->cdq_queues);
 	dev->nr_cdqs = 0;
 	return 0;
 }
@@ -2930,25 +2961,20 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 				    struct cdq_nvme_queue ** cdq,
 				    u32 entry_nr, u32 entry_nbyte)
 {
-	struct cdq_nvme_queue *curr_cdq;
-	for (int i = 0; i < dev->nr_cdqs; ++i) {
-		curr_cdq = dev->cdq_queues + i;
-		if (curr_cdq->entries != NULL)
-			continue;
+	struct cdq_nvme_queue *curr_cdq = nvme_get_first_empty_cdq(dev);
+	if(!curr_cdq)
+		return -EINVAL;
 
-		curr_cdq->entries = dma_alloc_coherent(dev->dev,
-						       entry_nr * entry_nbyte,
-						       &curr_cdq->entries_dma_addr,
-						       GFP_KERNEL);
-		if (!curr_cdq->entries)
-			return -ENOMEM;
+	curr_cdq->entries = dma_alloc_coherent(dev->dev,
+					       entry_nr * entry_nbyte,
+					       &curr_cdq->entries_dma_addr,
+					       GFP_KERNEL);
+	if (!curr_cdq->entries)
+		return -ENOMEM;
 
-		/* cdq_id is the array offset */
-		curr_cdq->cdq_id = i;
-		*cdq = curr_cdq;
+	*cdq = curr_cdq;
 
-		return 0;
-	}
+	return 0;
 
 	return -EBUSY;
 }
@@ -2973,7 +2999,7 @@ adapter_alloc_cdq(struct nvme_dev *dev, u16 qid,
 static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 				   struct nvme_cdq_mgmt * cdq_mgmt)
 {
-	int ret;
+	int ret, cdq_idx;
 	struct nvme_command c = { };
 	struct cdq_nvme_queue * cdq;
 	union nvme_result result = { };
@@ -3002,12 +3028,13 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	if (ret)
 		return ret;
 
-	/*
-	 * CDQ id returned to the user is the offset in the array
-	 * CDQ id returned by the controller is kept in *cdq
-	 */
-	cdq_mgmt->cdq_create.cdqid = cdq->cdq_id;
 	cdq->cdq_id = result.u16;
+
+	cdq_idx = nvme_get_cdq_idx(dev, cdq);
+	if (cdq_idx < 0)
+		return cdq_idx;
+
+	cdq_mgmt->cdq_create.cdqid = cdq_idx;
 
 	return ret;
 }
@@ -3016,11 +3043,16 @@ static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
 				   struct nvme_cdq_mgmt * cdq_mgmt)
 {
 	struct nvme_command c = { };
+	struct cdq_nvme_queue *cdq = nvme_get_cdq(dev, cdq_mgmt->tr_send.cdqid);
+
+	if (!cdq)
+		return -EINVAL;
+
 	c.cdq.opcode = nvme_admin_track_send;
 	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
 	c.cdq.mos = cpu_to_le16(cdq_mgmt->tr_send.action);
 
-	c.cdq.track_send.cdq_id = (dev->cdq_queues + cdq_mgmt->tr_send.cdqid)->cdq_id;
+	c.cdq.track_send.cdq_id = cdq->cdq_id;
 
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 }
