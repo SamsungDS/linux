@@ -460,7 +460,7 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 	 * 2. Connect entries with an FD
 	 */
 
-	cmd->alloc.cdqid = cdq_mgmt.cdq_create.cdqid;
+	cmd->alloc.cdqid = cdq_mgmt.cdq_create.ret_cdqid;
 	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 		return -EFAULT;
 
@@ -485,6 +485,18 @@ static int nvme_user_cdq_track_send(struct nvme_ctrl *ctrl,
 	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 }
 
+static int nvme_user_cdq_poll_start(struct nvme_ctrl *ctrl,
+				    const struct nvme_cdq_cmd *cmd,
+				    struct nvme_cdq_cmd __user *ucmd)
+{
+	struct nvme_cdq_mgmt cdq_mgmt = {};
+
+	cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_START;
+	cdq_mgmt.poll_start.cdqid = cmd->get_fd.cdqid;
+
+	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
+}
+
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
 		bool open_for_write)
@@ -499,6 +511,8 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_TR_SEND:
 		return nvme_user_cdq_track_send(ctrl, &cmd);
+	case NVME_CDQ_ADM_FLAGS_KTHREAD:
+		return nvme_user_cdq_poll_start(ctrl, &cmd, ucmd);
 	}
 
 	return -EPERM;
