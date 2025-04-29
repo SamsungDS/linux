@@ -28,6 +28,7 @@
 #include <linux/io-64-nonatomic-hi-lo.h>
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/delay.h>
 
 #include "trace.h"
 #include "nvme.h"
@@ -119,6 +120,8 @@ struct cdq_nvme_queue {
 	dma_addr_t entries_dma_addr;
 	__le16 cdq_id;
 	u16 cntlid;
+	struct task_struct *poll_thread;
+	spinlock_t entries_lock;
 };
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
@@ -3260,7 +3263,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	if (cdq_idx < 0)
 		return cdq_idx;
 
-	cdq_mgmt->cdq_create.cdqid = cdq_idx;
+	cdq_mgmt->cdq_create.ret_cdqid = cdq_idx;
 
 	return ret;
 }
@@ -3270,17 +3273,52 @@ static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
 {
 	struct nvme_command c = { };
 	struct cdq_nvme_queue *cdq = nvme_get_cdq(dev, cdq_mgmt->tr_send.cdqid);
-
 	if (!cdq)
 		return -EINVAL;
 
 	c.cdq.opcode = nvme_admin_track_send;
 	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
 	c.cdq.mos = cpu_to_le16(cdq_mgmt->tr_send.action);
-
 	c.cdq.track_send.cdq_id = cdq->cdq_id;
 
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
+}
+
+static int nvme_pci_cdq_poll_fn(void *data)
+{
+	struct cdq_nvme_queue* cdq = data;
+	static int runs = 10;
+	bool available_work = false;
+
+	while (!kthread_should_stop() && runs > 0) {
+		spin_lock(&cdq->entries_lock);
+		printk("CDQ poll thread run %d\n", runs);
+		/* Forward read the queue to ascertain if there is work */
+		available_work = false;
+		runs --;
+		spin_unlock(&cdq->entries_lock);
+
+		if (!available_work)
+			msleep(1000);
+	}
+	return 0;
+}
+
+static int nvme_pci_cdq_cmd_pollstart(struct nvme_dev *dev,
+				      struct nvme_cdq_mgmt * cdq_mgmt)
+{
+	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
+	if (!cdq)
+		return -EINVAL;
+
+	spin_lock_init(&cdq->entries_lock);
+	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq, "CDQPoll(%d)", nvme_get_cdq_idx(dev, cdq));
+
+	if (IS_ERR(cdq->poll_thread)) {
+		return PTR_ERR(cdq->poll_thread);
+	}
+
+	return 0;
 }
 
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
@@ -3292,6 +3330,8 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_track_send(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
 		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_START)
+		return nvme_pci_cdq_cmd_pollstart(dev, cdq_mgmt);
 
 	return -EINVAL;
 }
