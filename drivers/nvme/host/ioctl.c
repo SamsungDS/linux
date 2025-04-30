@@ -445,7 +445,12 @@ static int nvme_user_cdq_poll_start(struct nvme_ctrl *ctrl,
 {
 	struct nvme_cdq_mgmt cdq_mgmt = {};
 
-	cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_START;
+	if (cmd->get_fd.action == NVME_CDQ_ADM_FLAGS_KTHREAD_START)
+		cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_START;
+	else if (cmd->get_fd.action == NVME_CDQ_ADM_FLAGS_KTHREAD_STOP)
+		cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_STOP;
+	else
+		return -EINVAL;
 	cdq_mgmt.poll_start.cdqid = cmd->get_fd.cdqid;
 
 	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);

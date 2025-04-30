@@ -556,6 +556,7 @@ struct nvme_cdq_mgmt {
 #define NVME_CDQ_CMD_CREATE		(1 << 1)
 #define NVME_CDQ_CMD_TRACK_SEND		(1 << 2)
 #define NVME_CDQ_CMD_POLL_START		(1 << 3)
+#define NVME_CDQ_CMD_POLL_STOP		(1 << 4)
 	unsigned int op_type;
 	union {
 		struct {
