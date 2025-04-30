@@ -113,8 +113,11 @@ struct nvme_cdq_cmd {
 			__u16	cdqid;
 		} tr_send;
 		struct{
-			__u16 cdqid;
-			int fd;
+			__u8	action;
+#define NVME_CDQ_ADM_FLAGS_KTHREAD_START	0x0
+#define NVME_CDQ_ADM_FLAGS_KTHREAD_STOP		0x1
+			__u16	cdqid;
+			int	fd;
 		} get_fd;
 	};
 };

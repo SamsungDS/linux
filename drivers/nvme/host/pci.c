@@ -120,6 +120,7 @@ struct cdq_nvme_queue {
 	__le16 cdq_id;
 	u16 cntlid;
 	struct task_struct *poll_thread;
+	bool poll_active;
 	spinlock_t entries_lock;
 };
 /*
@@ -3064,7 +3065,7 @@ static int nvme_pci_cdq_poll_fn(void *data)
 	static int runs = 10;
 	bool available_work = false;
 
-	while (!kthread_should_stop() && runs > 0) {
+	while (!kthread_should_stop() && cdq->poll_active && runs > 0) {
 		spin_lock(&cdq->entries_lock);
 		printk("CDQ poll thread run %d\n", runs);
 		/* Forward read the queue to ascertain if there is work */
@@ -3086,11 +3087,28 @@ static int nvme_pci_cdq_cmd_pollstart(struct nvme_dev *dev,
 		return -EINVAL;
 
 	spin_lock_init(&cdq->entries_lock);
+	spin_lock(&cdq->entries_lock);
+	cdq->poll_active = true;
+	spin_lock(&cdq->entries_lock);
 	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq, "CDQPoll(%d)", nvme_get_cdq_idx(dev, cdq));
 
 	if (IS_ERR(cdq->poll_thread)) {
 		return PTR_ERR(cdq->poll_thread);
 	}
+
+	return 0;
+}
+
+static int nvme_pci_cdq_cmd_pollstop(struct nvme_dev *dev,
+				     struct nvme_cdq_mgmt * cdq_mgmt)
+{
+	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
+	if (!cdq)
+		return -EINVAL;
+
+	spin_lock(&cdq->entries_lock);
+	cdq->poll_active = false;
+	spin_lock(&cdq->entries_lock);
 
 	return 0;
 }
@@ -3106,6 +3124,8 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_START)
 		return nvme_pci_cdq_cmd_pollstart(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_STOP)
+		return nvme_pci_cdq_cmd_pollstop(dev, cdq_mgmt);
 
 	return -EINVAL;
 }
