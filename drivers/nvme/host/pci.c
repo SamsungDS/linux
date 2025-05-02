@@ -117,6 +117,10 @@ static void nvme_update_attrs(struct nvme_dev *dev);
 struct cdq_nvme_queue {
 	struct nvme_dev *dev;
 	void *entries;
+	u32 entry_nbyte;
+	u32 entry_nr;
+	u32 curr_slot;
+	u8 curr_cdqp;
 	dma_addr_t entries_dma_addr;
 	__le16 cdq_id;
 	u16 cntlid;
@@ -124,6 +128,7 @@ struct cdq_nvme_queue {
 	bool poll_active;
 	spinlock_t entries_lock;
 };
+
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */
@@ -3192,6 +3197,7 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 				    u32 entry_nr, u32 entry_nbyte)
 {
 	struct cdq_nvme_queue *curr_cdq = nvme_get_first_empty_cdq(dev);
+	memset(curr_cdq, 0, sizeof(*curr_cdq));
 	if(!curr_cdq)
 		return -EINVAL;
 
@@ -3201,6 +3207,10 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 					       GFP_KERNEL);
 	if (!curr_cdq->entries)
 		return -ENOMEM;
+
+	curr_cdq->entry_nbyte = entry_nbyte;
+	curr_cdq->entry_nr = entry_nr;
+	curr_cdq->dev = dev;
 
 	*cdq = curr_cdq;
 
@@ -3251,7 +3261,8 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 
 	c.cdq.create_cdq.cqs = cpu_to_le16(cdq_mgmt->cdq_create.cntlid);
 
-	c.cdq.cdqsize = cdq_mgmt->cdq_create.entry_nbyte << cdq_mgmt->cdq_create.entry_nr;
+	/* >>2 because the size is in dwords */
+	c.cdq.cdqsize = (cdq_mgmt->cdq_create.entry_nbyte * cdq_mgmt->cdq_create.entry_nr) >> 2;
 	c.cdq.prp1 = cdq->entries_dma_addr;
 
 	ret =  __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
@@ -3285,22 +3296,55 @@ static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 }
 
+static int nvme_pci_cdq_get_phase_cdqp(void *entry) 
+{
+	/*
+	 * (+ 32) & 0x1 is the offset for the phase bit of the migration entries.
+	 * This should be dynamic going forward
+	 */
+	return (*(u8*)(entry + 32) & 0x1);
+}
+
+static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue* cdq)
+{
+	struct nvme_command c = { };
+	c.features.opcode = nvme_admin_set_features;
+	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
+	c.features.dword11 = cdq->cdq_id;
+	c.features.dword12 = cpu_to_le32(cdq->curr_slot);
+
+	return nvme_submit_sync_cmd(cdq->dev->ctrl.admin_q, &c, NULL, 0);
+}
+
 static int nvme_pci_cdq_poll_fn(void *data)
 {
 	struct cdq_nvme_queue* cdq = data;
-	static int runs = 10;
-	bool available_work = false;
+	void *curr_entry = NULL;
+	int ret = 0;
 
-	while (!kthread_should_stop() && cdq->poll_active && runs > 0) {
-		spin_lock(&cdq->entries_lock);
-		printk("CDQ poll thread run %d\n", runs);
-		/* Forward read the queue to ascertain if there is work */
-		available_work = false;
-		runs --;
-		spin_unlock(&cdq->entries_lock);
+	while (!kthread_should_stop() && cdq->poll_active) {
+		curr_entry = cdq->entries + (cdq->curr_slot * cdq->entry_nbyte);
+		if (nvme_pci_cdq_get_phase_cdqp(curr_entry) != cdq->curr_cdqp) {
+			printk("An entry has been added");
+			spin_lock(&cdq->entries_lock);
+			if (cdq->curr_slot + 1 == cdq->entry_nr) {
+				cdq->curr_slot = 0;
+				cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
+			} else {
+				cdq->curr_slot++;
+			}
+			spin_unlock(&cdq->entries_lock);
 
-		if (!available_work)
-			msleep(1000);
+			ret = nvme_pci_cdq_send_feature_id(cdq);
+			if (ret) {
+				printk("Error sending the head update");
+				return ret;
+			} else
+				printk("An feature send has been sent");
+		}
+		printk("CDQ poll thread run");
+
+		msleep(5000);
 	}
 	return 0;
 }
@@ -3315,7 +3359,7 @@ static int nvme_pci_cdq_cmd_pollstart(struct nvme_dev *dev,
 	spin_lock_init(&cdq->entries_lock);
 	spin_lock(&cdq->entries_lock);
 	cdq->poll_active = true;
-	spin_lock(&cdq->entries_lock);
+	spin_unlock(&cdq->entries_lock);
 	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq, "CDQPoll(%d)", nvme_get_cdq_idx(dev, cdq));
 
 	if (IS_ERR(cdq->poll_thread)) {
