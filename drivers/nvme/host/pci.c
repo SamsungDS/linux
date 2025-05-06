@@ -29,6 +29,7 @@
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
 #include <linux/delay.h>
+#include <linux/anon_inodes.h>
 
 #include "trace.h"
 #include "nvme.h"
@@ -129,6 +130,7 @@ struct cdq_nvme_queue {
 	struct task_struct *poll_thread;
 	bool poll_active;
 	spinlock_t entries_lock;
+	struct file* filep;
 };
 
 /*
@@ -3366,7 +3368,6 @@ static int nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
 	return ret;
 }
 
-
 static int nvme_pci_cdq_consume_printks(const u32 init_entry, const size_t tx_nentry,
 					struct cdq_nvme_queue* cdq, void* priv)
 {
@@ -3399,7 +3400,9 @@ static int nvme_pci_cdq_cmd_pollstart(struct nvme_dev *dev,
 	spin_lock(&cdq->entries_lock);
 	cdq->poll_active = true;
 	spin_unlock(&cdq->entries_lock);
-	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq, "CDQPoll(%d)", nvme_get_cdq_idx(dev, cdq));
+	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq,
+				       "CDQPoll(%d)",
+				       nvme_get_cdq_idx(dev, cdq));
 
 	if (IS_ERR(cdq->poll_thread)) {
 		return PTR_ERR(cdq->poll_thread);
@@ -3422,6 +3425,86 @@ static int nvme_pci_cdq_cmd_pollstop(struct nvme_dev *dev,
 	return 0;
 }
 
+static int nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
+					  struct cdq_nvme_queue* cdq, void* priv)
+{
+	char __user *buf = priv;
+	void *entries_start;
+	size_t copy_nentry = min(cdq->entry_nr - init_entry, tx_nentry);
+
+	entries_start = cdq->entries + (init_entry * cdq->entry_nbyte);
+	if (copy_to_user(buf, entries_start, copy_nentry * cdq->entry_nbyte))
+		return -EFAULT;
+
+	if (copy_nentry == tx_nentry)
+		return 0;
+
+	/* Copy the entries that have been wrapped around */
+	buf += (copy_nentry * cdq->entry_nbyte);
+	copy_nentry = tx_nentry - copy_nentry;
+	if (copy_to_user(buf, cdq->entries, copy_nentry * cdq->entry_nbyte))
+		return -EFAULT;
+
+	return 0;
+}
+
+static ssize_t nvme_pci_cdq_fops_read(struct file *filep, char __user *buf,
+				      size_t count, loff_t *ppos)
+{
+	struct cdq_nvme_queue *cdq = filep->private_data;
+	size_t max_nentry = count / cdq->entry_nbyte;
+	if (*ppos)
+		return -ESPIPE;
+
+	if (count < cdq->entry_nbyte)
+		return -EINVAL;
+
+	if (max_nentry > cdq->entry_nr)
+		return -EINVAL;
+
+	return nvme_pci_cdq_traverse(cdq, max_nentry, nvme_pci_cdq_consume_fops_read, buf);
+}
+
+static const struct file_operations cdq_fops = {
+	.owner		= THIS_MODULE,
+	.open		= nonseekable_open,
+	.read		= nvme_pci_cdq_fops_read,
+};
+
+static int nvme_pci_cdq_cmd_readfd(struct nvme_dev *dev,
+				   struct nvme_cdq_mgmt *cdq_mgmt)
+{
+	int fdno, ret = 0;
+	struct file *filep;
+	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
+
+	if (cdq->filep)
+		return -EINVAL;
+
+	filep = anon_inode_getfile("[cdq-readfd]", &cdq_fops, cdq, O_RDWR);
+	if (IS_ERR(filep)) {
+		ret = PTR_ERR(filep);
+		goto out;
+	}
+
+	fdno = get_unused_fd_flags(O_CLOEXEC);
+	if (fdno < 0) {
+		ret = fdno;
+		goto out_fput;
+	}
+
+	fd_install(fdno, cdq->filep);
+
+	cdq_mgmt->readfd.readfd = fdno;
+
+	return 0;
+
+out_fput:
+	fput(filep);
+out:
+	return ret;
+}
+
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
 {
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
@@ -3435,6 +3518,8 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_cmd_pollstart(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_STOP)
 		return nvme_pci_cdq_cmd_pollstop(dev, cdq_mgmt);
+	if (cdq_mgmt->op_type & NVME_CDQ_CMD_READFD)
+		return nvme_pci_cdq_cmd_readfd(dev, cdq_mgmt);
 
 	return -EINVAL;
 }
