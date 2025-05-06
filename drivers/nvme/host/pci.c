@@ -119,8 +119,10 @@ struct cdq_nvme_queue {
 	void *entries;
 	u32 entry_nbyte;
 	u32 entry_nr;
-	u32 curr_slot;
+	u32 curr_entry;
 	u8 curr_cdqp;
+	uint cdqp_offset;
+	uint cdqp_mask;
 	dma_addr_t entries_dma_addr;
 	__le16 cdq_id;
 	u16 cntlid;
@@ -3212,6 +3214,10 @@ static int nvme_pci_cdq_entry_alloc(struct nvme_dev *dev,
 	curr_cdq->entry_nr = entry_nr;
 	curr_cdq->dev = dev;
 
+	//FIXME: These are for the migration entry type. They need to be dynamic;
+	curr_cdq->cdqp_offset = 32;
+	curr_cdq->cdqp_mask = 0x1;
+
 	*cdq = curr_cdq;
 
 	return 0;
@@ -3296,54 +3302,87 @@ static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
 	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
 }
 
-static int nvme_pci_cdq_get_phase_cdqp(void *entry) 
+static int nvme_pci_cdq_is_tip_new(const struct cdq_nvme_queue *cdq)
 {
-	/*
-	 * (+ 32) & 0x1 is the offset for the phase bit of the migration entries.
-	 * This should be dynamic going forward
-	 */
-	return (*(u8*)(entry + 32) & 0x1);
+	void *tip = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
+	/* if different, then its new! */
+	return (*(u8*)(tip + cdq->cdqp_offset) & cdq->cdqp_mask) != cdq->curr_cdqp;
 }
 
-static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue* cdq)
+static void nvme_pci_cdq_next(struct cdq_nvme_queue *cdq)
+{
+	if (cdq->curr_entry + 1 == cdq->entry_nr) {
+		cdq->curr_entry = 0;
+		cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
+	} else {
+		cdq->curr_entry++;
+	}
+}
+
+static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
 {
 	struct nvme_command c = { };
 	c.features.opcode = nvme_admin_set_features;
 	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
 	c.features.dword11 = cdq->cdq_id;
-	c.features.dword12 = cpu_to_le32(cdq->curr_slot);
+	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
 
 	return nvme_submit_sync_cmd(cdq->dev->ctrl.admin_q, &c, NULL, 0);
+}
+
+/*
+ * Traverse the CDQ until max entries are reached or until the entry phase
+ * bit is the same as the current phase bit.
+ *
+ * cdq : Controller Data Queue
+ * max_nentry : Max entries to "traverse" before sending feature id
+ * consume : Executed after exhausting traversal and before seinding the nvme feature id
+ * priv_data : argument for fn
+ */
+static int nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
+				 int (*consume)(const u32 init_entry,
+						const size_t tx_nentry,
+						struct cdq_nvme_queue* cdq,
+						void* priv_data),
+				 void *priv_data)
+{
+	int ret = 0;
+	size_t tx_nentry = 0; /* transfered number of bytes */
+
+
+	spin_lock(&cdq->entries_lock);
+	u32 init_entry = cdq->curr_entry;
+	for (;tx_nentry < max_nentry && nvme_pci_cdq_is_tip_new(cdq);
+	     ++tx_nentry) {
+		nvme_pci_cdq_next(cdq);
+	}
+	ret = consume(init_entry, tx_nentry, cdq, priv_data);
+	spin_unlock(&cdq->entries_lock);
+	if (ret)
+		return ret;
+
+	ret = nvme_pci_cdq_send_feature_id(cdq);
+
+	return ret;
+}
+
+
+static int nvme_pci_cdq_consume_printks(const u32 init_entry, const size_t tx_nentry,
+					struct cdq_nvme_queue* cdq, void* priv)
+{
+	printk("CDQ: Processed %ld entries from %d", tx_nentry, init_entry);
+	return 0;
 }
 
 static int nvme_pci_cdq_poll_fn(void *data)
 {
 	struct cdq_nvme_queue* cdq = data;
-	void *curr_entry = NULL;
 	int ret = 0;
 
 	while (!kthread_should_stop() && cdq->poll_active) {
-		curr_entry = cdq->entries + (cdq->curr_slot * cdq->entry_nbyte);
-		if (nvme_pci_cdq_get_phase_cdqp(curr_entry) != cdq->curr_cdqp) {
-			printk("An entry has been added");
-			spin_lock(&cdq->entries_lock);
-			if (cdq->curr_slot + 1 == cdq->entry_nr) {
-				cdq->curr_slot = 0;
-				cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
-			} else {
-				cdq->curr_slot++;
-			}
-			spin_unlock(&cdq->entries_lock);
-
-			ret = nvme_pci_cdq_send_feature_id(cdq);
-			if (ret) {
-				printk("Error sending the head update");
-				return ret;
-			} else
-				printk("An feature send has been sent");
-		}
-		printk("CDQ poll thread run");
-
+		ret = nvme_pci_cdq_traverse(cdq, 1, nvme_pci_cdq_consume_printks, NULL);
+		if (ret)
+			return ret;
 		msleep(5000);
 	}
 	return 0;
