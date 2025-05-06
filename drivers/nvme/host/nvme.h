@@ -522,6 +522,7 @@ struct nvme_cdq_mgmt {
 #define NVME_CDQ_CMD_TRACK_SEND		(1 << 2)
 #define NVME_CDQ_CMD_POLL_START		(1 << 3)
 #define NVME_CDQ_CMD_POLL_STOP		(1 << 4)
+#define NVME_CDQ_CMD_READFD		(1 << 5)
 	unsigned int op_type;
 	union {
 		struct {
@@ -540,6 +541,10 @@ struct nvme_cdq_mgmt {
 		struct {
 			u16 cdqid;
 		} poll_start;
+		struct {
+			u16 cdqid;
+			int readfd;
+		} readfd;
 	};
 };
 
