@@ -3116,48 +3116,52 @@ static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
  * consume : Executed after exhausting traversal and before seinding the nvme feature id
  * priv_data : argument for fn
  */
-static int nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
-				 int (*consume)(const u32 init_entry,
-						const size_t tx_nentry,
-						struct cdq_nvme_queue* cdq,
-						void* priv_data),
-				 void *priv_data)
+static ssize_t nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
+				     ssize_t (*consume)(const u32 init_entry,
+							const size_t tx_nentry,
+							struct cdq_nvme_queue* cdq,
+							void* priv_data),
+				     void *priv_data)
 {
-	int ret = 0;
-	size_t tx_nentry = 0; /* transfered number of bytes */
-
+	int ret;
+	ssize_t tx_nentry = 0; /* transfered num entries */
+	size_t target_nentry = 0; /* target num entries */
 
 	spin_lock(&cdq->entries_lock);
 	u32 init_entry = cdq->curr_entry;
-	for (;tx_nentry < max_nentry && nvme_pci_cdq_is_tip_new(cdq);
-	     ++tx_nentry) {
+	for (;target_nentry < max_nentry && nvme_pci_cdq_is_tip_new(cdq);
+	     ++target_nentry) {
 		nvme_pci_cdq_next(cdq);
 	}
-	ret = consume(init_entry, tx_nentry, cdq, priv_data);
+	tx_nentry = consume(init_entry, target_nentry, cdq, priv_data);
 	spin_unlock(&cdq->entries_lock);
-	if (ret)
-		return ret;
+	if (tx_nentry < 0)
+		return tx_nentry;
+	if (tx_nentry != target_nentry)
+		return -EIO;
 
 	ret = nvme_pci_cdq_send_feature_id(cdq);
+	if (ret < 0)
+		return ret;
 
-	return ret;
+	return tx_nentry;
 }
 
-static int nvme_pci_cdq_consume_printks(const u32 init_entry, const size_t tx_nentry,
-					struct cdq_nvme_queue* cdq, void* priv)
+static ssize_t nvme_pci_cdq_consume_printks(const u32 init_entry, const size_t tx_nentry,
+					    struct cdq_nvme_queue* cdq, void* priv)
 {
 	printk("CDQ: Processed %ld entries from %d", tx_nentry, init_entry);
-	return 0;
+	return tx_nentry;
 }
 
 static int nvme_pci_cdq_poll_fn(void *data)
 {
 	struct cdq_nvme_queue* cdq = data;
-	int ret = 0;
+	ssize_t ret = 0;
 
 	while (!kthread_should_stop() && cdq->poll_active) {
 		ret = nvme_pci_cdq_traverse(cdq, 1, nvme_pci_cdq_consume_printks, NULL);
-		if (ret)
+		if (ret < 0)
 			return ret;
 		msleep(5000);
 	}
@@ -3200,8 +3204,8 @@ static int nvme_pci_cdq_cmd_pollstop(struct nvme_dev *dev,
 	return 0;
 }
 
-static int nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
-					  struct cdq_nvme_queue* cdq, void* priv)
+static ssize_t nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
+					      struct cdq_nvme_queue* cdq, void* priv)
 {
 	char __user *buf = priv;
 	void *entries_start;
@@ -3212,7 +3216,7 @@ static int nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_
 		return -EFAULT;
 
 	if (copy_nentry == tx_nentry)
-		return 0;
+		return tx_nentry;
 
 	/* Copy the entries that have been wrapped around */
 	buf += (copy_nentry * cdq->entry_nbyte);
@@ -3220,7 +3224,7 @@ static int nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_
 	if (copy_to_user(buf, cdq->entries, copy_nentry * cdq->entry_nbyte))
 		return -EFAULT;
 
-	return 0;
+	return tx_nentry;
 }
 
 static ssize_t nvme_pci_cdq_fops_read(struct file *filep, char __user *buf,
@@ -3262,19 +3266,21 @@ static int nvme_pci_cdq_cmd_readfd(struct nvme_dev *dev,
 		goto out;
 	}
 
-	fdno = get_unused_fd_flags(O_CLOEXEC);
+	fdno = get_unused_fd_flags(O_CLOEXEC | O_RDONLY | O_DIRECT);
 	if (fdno < 0) {
 		ret = fdno;
 		goto out_fput;
 	}
 
-	fd_install(fdno, cdq->filep);
+	fd_install(fdno, filep);
+	cdq->filep = filep;
 
 	cdq_mgmt->readfd.readfd = fdno;
 
 	return 0;
 
 out_fput:
+	put_unused_fd(fdno);
 	fput(filep);
 out:
 	return ret;
