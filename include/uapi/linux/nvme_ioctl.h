@@ -97,8 +97,7 @@ struct nvme_cdq_cmd {
 	__u32	flags;
 #define NVME_CDQ_ADM_FLAGS_ALLOC	(1 << 1)
 #define NVME_CDQ_ADM_FLAGS_TR_SEND	(1 << 2)
-#define NVME_CDQ_ADM_FLAGS_KTHREAD	(1 << 3)
-#define NVME_CDQ_ADM_FLAGS_READFD	(1 << 4)
+#define NVME_CDQ_ADM_FLAGS_READFD	(1 << 3)
 	union {
 		struct {
 			__u32	entry_nr;
@@ -113,12 +112,6 @@ struct nvme_cdq_cmd {
 #define NVME_CDQ_ADM_FLAGS_TR_SEND_STOP		0x0
 			__u16	cdqid;
 		} tr_send;
-		struct {
-			__u8	action;
-#define NVME_CDQ_ADM_FLAGS_KTHREAD_START	0x0
-#define NVME_CDQ_ADM_FLAGS_KTHREAD_STOP		0x1
-			__u16	cdqid;
-		} kthread;
 		struct {
 			__u16	cdqid;
 			int read_fd;

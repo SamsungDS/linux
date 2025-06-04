@@ -436,23 +436,6 @@ static int nvme_user_cdq_track_send(struct nvme_ctrl *ctrl,
 	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 }
 
-static int nvme_user_cdq_poll_start(struct nvme_ctrl *ctrl,
-				    const struct nvme_cdq_cmd *cmd,
-				    struct nvme_cdq_cmd __user *ucmd)
-{
-	struct nvme_cdq_mgmt cdq_mgmt = {};
-
-	if (cmd->kthread.action == NVME_CDQ_ADM_FLAGS_KTHREAD_START)
-		cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_START;
-	else if (cmd->kthread.action == NVME_CDQ_ADM_FLAGS_KTHREAD_STOP)
-		cdq_mgmt.op_type = NVME_CDQ_CMD_POLL_STOP;
-	else
-		return -EINVAL;
-	cdq_mgmt.poll_start.cdqid = cmd->kthread.cdqid;
-
-	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-}
-
 static int nvme_user_cdq_readfd(struct nvme_ctrl *ctrl,
 				struct nvme_cdq_cmd *cmd,
 				struct nvme_cdq_cmd __user *ucmd)
@@ -486,8 +469,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_TR_SEND:
 		return nvme_user_cdq_track_send(ctrl, &cmd);
-	case NVME_CDQ_ADM_FLAGS_KTHREAD:
-		return nvme_user_cdq_poll_start(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_READFD:
 		return nvme_user_cdq_readfd(ctrl, &cmd, ucmd);
 	}

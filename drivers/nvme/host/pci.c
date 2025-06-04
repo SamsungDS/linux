@@ -127,8 +127,6 @@ struct cdq_nvme_queue {
 	dma_addr_t entries_dma_addr;
 	__le16 cdq_id;
 	u16 cntlid;
-	struct task_struct *poll_thread;
-	bool poll_active;
 	spinlock_t entries_lock;
 	struct file* filep;
 };
@@ -3339,7 +3337,7 @@ static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
  * cdq : Controller Data Queue
  * max_nentry : Max entries to "traverse" before sending feature id
  * consume : Executed after exhausting traversal and before seinding the nvme feature id
- * priv_data : argument for fn
+ * priv_data : argument for consume
  */
 static ssize_t nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
 				     ssize_t (*consume)(const u32 init_entry,
@@ -3370,63 +3368,6 @@ static ssize_t nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nent
 		return ret;
 
 	return tx_nentry;
-}
-
-static ssize_t nvme_pci_cdq_consume_printks(const u32 init_entry, const size_t tx_nentry,
-					    struct cdq_nvme_queue* cdq, void* priv)
-{
-	printk("CDQ: Processed %ld entries from %d", tx_nentry, init_entry);
-	return tx_nentry;
-}
-
-static int nvme_pci_cdq_poll_fn(void *data)
-{
-	struct cdq_nvme_queue* cdq = data;
-	ssize_t ret = 0;
-
-	while (!kthread_should_stop() && cdq->poll_active) {
-		ret = nvme_pci_cdq_traverse(cdq, 1, nvme_pci_cdq_consume_printks, NULL);
-		if (ret < 0)
-			return ret;
-		msleep(5000);
-	}
-	return 0;
-}
-
-static int nvme_pci_cdq_cmd_pollstart(struct nvme_dev *dev,
-				      struct nvme_cdq_mgmt * cdq_mgmt)
-{
-	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
-	if (!cdq)
-		return -EINVAL;
-
-	spin_lock_init(&cdq->entries_lock);
-	spin_lock(&cdq->entries_lock);
-	cdq->poll_active = true;
-	spin_unlock(&cdq->entries_lock);
-	cdq->poll_thread = kthread_run(nvme_pci_cdq_poll_fn, cdq,
-				       "CDQPoll(%d)",
-				       nvme_get_cdq_idx(dev, cdq));
-
-	if (IS_ERR(cdq->poll_thread)) {
-		return PTR_ERR(cdq->poll_thread);
-	}
-
-	return 0;
-}
-
-static int nvme_pci_cdq_cmd_pollstop(struct nvme_dev *dev,
-				     struct nvme_cdq_mgmt * cdq_mgmt)
-{
-	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
-	if (!cdq)
-		return -EINVAL;
-
-	spin_lock(&cdq->entries_lock);
-	cdq->poll_active = false;
-	spin_lock(&cdq->entries_lock);
-
-	return 0;
 }
 
 static ssize_t nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
@@ -3480,7 +3421,7 @@ static int nvme_pci_cdq_cmd_readfd(struct nvme_dev *dev,
 {
 	int fdno, ret = 0;
 	struct file *filep;
-	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->poll_start.cdqid);
+	struct cdq_nvme_queue* cdq = nvme_get_cdq(dev, cdq_mgmt->readfd.cdqid);
 
 	if (cdq->filep)
 		return -EINVAL;
@@ -3520,10 +3461,6 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_track_send(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
 		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_START)
-		return nvme_pci_cdq_cmd_pollstart(dev, cdq_mgmt);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_POLL_STOP)
-		return nvme_pci_cdq_cmd_pollstop(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_READFD)
 		return nvme_pci_cdq_cmd_readfd(dev, cdq_mgmt);
 
