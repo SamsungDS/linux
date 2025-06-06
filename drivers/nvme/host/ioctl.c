@@ -411,7 +411,8 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 	if (status)
 		return status;
 
-	cmd->alloc.cdqid = cdq_mgmt.cdq_create.ret_cdqid;
+	cmd->alloc.cdq_id = cdq_mgmt.cdq_create.ret_cdq_id;
+	cmd->alloc.cdq_idx = cdq_mgmt.cdq_create.ret_cdq_idx;
 	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 		return -EFAULT;
 

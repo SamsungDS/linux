@@ -3271,7 +3271,7 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	c.cdq.cdqsize = (cdq_mgmt->cdq_create.entry_nbyte * cdq_mgmt->cdq_create.entry_nr) >> 2;
 	c.cdq.prp1 = cdq->entries_dma_addr;
 
-	ret =  __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
+	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
 	if (ret)
 		return ret;
 
@@ -3281,7 +3281,8 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	if (cdq_idx < 0)
 		return cdq_idx;
 
-	cdq_mgmt->cdq_create.ret_cdqid = cdq_idx;
+	cdq_mgmt->cdq_create.ret_cdq_id = cdq->cdq_id;
+	cdq_mgmt->cdq_create.ret_cdq_idx = cdq_idx;
 
 	return ret;
 }
