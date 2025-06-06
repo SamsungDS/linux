@@ -3286,22 +3286,6 @@ static int nvme_pci_cdq_cmd_create(struct nvme_dev *dev,
 	return ret;
 }
 
-static int nvme_pci_cdq_track_send(struct nvme_dev *dev,
-				   struct nvme_cdq_mgmt * cdq_mgmt)
-{
-	struct nvme_command c = { };
-	struct cdq_nvme_queue *cdq = nvme_get_cdq(dev, cdq_mgmt->tr_send.cdqid);
-	if (!cdq)
-		return -EINVAL;
-
-	c.cdq.opcode = nvme_admin_track_send;
-	c.cdq.sel = NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND;
-	c.cdq.mos = cpu_to_le16(cdq_mgmt->tr_send.action);
-	c.cdq.track_send.cdq_id = cdq->cdq_id;
-
-	return nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, 0);
-}
-
 static int nvme_pci_cdq_is_tip_new(const struct cdq_nvme_queue *cdq)
 {
 	void *tip = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
@@ -3457,8 +3441,6 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
 	if (cdq_mgmt->op_type & NVME_CDQ_CTRL_ALLOC)
 		return nvme_pci_cdq_ctrl_init(dev, cdq_mgmt);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_TRACK_SEND)
-		return nvme_pci_cdq_track_send(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
 		return nvme_pci_cdq_cmd_create(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_READFD)

@@ -1212,7 +1212,6 @@ enum nvme_admin_opcode {
 	nvme_admin_virtual_mgmt		= 0x1c,
 	nvme_admin_nvme_mi_send		= 0x1d,
 	nvme_admin_nvme_mi_recv		= 0x1e,
-	nvme_admin_track_send		= 0x3d,
 	nvme_admin_cdq			= 0x45,
 	nvme_admin_dbbuf		= 0x7C,
 	nvme_admin_format_nvm		= 0x80,
@@ -1498,14 +1497,10 @@ struct nvme_cdq {
 	__u32			rsvd8[2];
 #define NVME_CDQ_SEL_CREATE_CDQ			0x0
 #define NVME_CDQ_SEL_DELETE_CDQ			0x1
-#define NVME_CDQ_SEL_LOG_USER_DATA_TRACKSEND	0x0
-#define NVME_CDQ_SEL_TRACK_MEM_TRACKSEND	0x0
 	__u8			sel;
 	__u8			rsvd10;
 #define NVME_CDQ_MOS_CREATE_QT_MASK	0x00ff
 #define NVME_CDQ_MOS_CREATE_QT_UDMQ	0x0000
-#define NVME_CDQ_MOS_LACT_START_LOG	0x0001
-#define NVME_CDQ_MOS_LACT_STOP_LOG	0x0000
 	__le16			mos;
 	union {
 		struct {
@@ -1513,10 +1508,6 @@ struct nvme_cdq {
 			__le16	cdq_flags;
 			__le16	cqs;
 		} create_cdq;
-		struct {
-			__le16	cdq_id;
-			__le16 rsvd;
-		} track_send;
 	};
 	__le32			cdqsize;
 	__u32			rsvd13[2];

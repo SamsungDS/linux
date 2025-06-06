@@ -418,24 +418,6 @@ static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
 	return status;
 }
 
-static int nvme_user_cdq_track_send(struct nvme_ctrl *ctrl,
-				    const struct nvme_cdq_cmd * cmd)
-{
-	struct nvme_cdq_mgmt cdq_mgmt = {};
-
-	cdq_mgmt.op_type = NVME_CDQ_CMD_TRACK_SEND;
-	cdq_mgmt.tr_send.cdqid = cmd->tr_send.cdqid;
-
-	if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_START)
-		cdq_mgmt.tr_send.action = NVME_CDQ_MOS_LACT_START_LOG;
-	else if (cmd->tr_send.action == NVME_CDQ_ADM_FLAGS_TR_SEND_STOP)
-		cdq_mgmt.tr_send.action = NVME_CDQ_MOS_LACT_STOP_LOG;
-	else
-		return -EINVAL;
-
-	return ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-}
-
 static int nvme_user_cdq_readfd(struct nvme_ctrl *ctrl,
 				struct nvme_cdq_cmd *cmd,
 				struct nvme_cdq_cmd __user *ucmd)
@@ -467,8 +449,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	switch (cmd.flags) {
 	case NVME_CDQ_ADM_FLAGS_ALLOC: /* 1. Create the CDQ in the ioctl dev */
 		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
-	case NVME_CDQ_ADM_FLAGS_TR_SEND:
-		return nvme_user_cdq_track_send(ctrl, &cmd);
 	case NVME_CDQ_ADM_FLAGS_READFD:
 		return nvme_user_cdq_readfd(ctrl, &cmd, ucmd);
 	}
