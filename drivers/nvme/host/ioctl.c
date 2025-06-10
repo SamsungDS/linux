@@ -387,32 +387,23 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
-static int nvme_user_cdq_alloc(struct nvme_ctrl *ctrl,
-			       struct nvme_cdq_cmd * cmd,
-			       struct nvme_cdq_cmd __user *ucmd)
+static int nvme_user_cdq_create(struct nvme_ctrl *ctrl,
+				struct nvme_cdq_cmd *cmd,
+				struct nvme_cdq_cmd __user *ucmd)
 {
+	int status;
 	struct nvme_cdq_mgmt cdq_mgmt = {};
-	int status = 0;
 
-	cdq_mgmt.op_type = NVME_CDQ_CTRL_ALLOC;
-#define NVME_CDQ_CTRL_ALLOC_NR_CDQS	2 /* For now just 2 queues */
-	cdq_mgmt.cdq_alloc.nr_cdqs = NVME_CDQ_CTRL_ALLOC_NR_CDQS;
-	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-	if (status)
-		return status;
-
-	memset(&cdq_mgmt, 0, sizeof(cdq_mgmt));
 	cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
-	cdq_mgmt.cdq_create.cntlid = cmd->alloc.cntlid;
-	cdq_mgmt.cdq_create.entry_nbyte = cmd->alloc.entry_nbyte;
-	cdq_mgmt.cdq_create.entry_nr = cmd->alloc.entry_nr;
+	cdq_mgmt.cdq_create.cntlid = cmd->create.cntlid;
+	cdq_mgmt.cdq_create.entry_nbyte = cmd->create.entry_nbyte;
+	cdq_mgmt.cdq_create.entry_nr = cmd->create.entry_nr;
 	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 
 	if (status)
 		return status;
 
-	cmd->alloc.cdq_id = cdq_mgmt.cdq_create.ret_cdq_id;
-	cmd->alloc.cdq_idx = cdq_mgmt.cdq_create.ret_cdq_idx;
+	cmd->create.cdq_id = cdq_mgmt.cdq_create.ret_cdqid;
 	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 		return -EFAULT;
 
@@ -448,8 +439,8 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		return -EFAULT;
 
 	switch (cmd.flags) {
-	case NVME_CDQ_ADM_FLAGS_ALLOC: /* 1. Create the CDQ in the ioctl dev */
-		return nvme_user_cdq_alloc(ctrl, &cmd, ucmd);
+	case NVME_CDQ_ADM_FLAGS_CREATE:
+		return nvme_user_cdq_create(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_READFD:
 		return nvme_user_cdq_readfd(ctrl, &cmd, ucmd);
 	}

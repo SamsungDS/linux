@@ -95,16 +95,15 @@ struct nvme_uring_cmd {
 struct nvme_cdq_cmd {
 	__u32	argsize;
 	__u32	flags;
-#define NVME_CDQ_ADM_FLAGS_ALLOC	(1 << 1)
-#define NVME_CDQ_ADM_FLAGS_READFD	(1 << 2)
+#define NVME_CDQ_ADM_FLAGS_READFD	(1 << 0)
+#define NVME_CDQ_ADM_FLAGS_CREATE	(1 << 1)
 	union {
 		struct {
 			__u32	entry_nr;
 			__u32	entry_nbyte;
 			__u16	cntlid;
-			__u16	cdq_idx;	// kernel idx
-			__u16	cdq_id;		// nvme id
-		} alloc;
+			__u16	cdq_id;
+		} create;
 		struct {
 			__u16	cdqid;
 			int read_fd;
