@@ -426,6 +426,7 @@ static int nvme_user_cdq_readfd(struct nvme_ctrl *ctrl,
 	int status;
 	struct nvme_cdq_mgmt cdq_mgmt = {};
 	cdq_mgmt.op_type = NVME_CDQ_CMD_READFD;
+	cdq_mgmt.readfd.cdqid = cmd->readfd.cdqid;
 	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 
 	if (status)
