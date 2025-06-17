@@ -105,6 +105,8 @@ struct nvme_cdq_cmd {
 			__u16	cdq_id;
 			__u16	cqs;
 			__u16	mos;
+			__u32	cdqp_offset;
+			__u32	cdqp_mask;
 		} adm;
 		struct {
 			__u16	cdqid;

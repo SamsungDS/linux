@@ -395,16 +395,20 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 	struct nvme_cdq_mgmt cdq_mgmt;
 
 	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
+		if (cmd->adm.entry_nbyte < cmd->adm.cdqp_offset)
+			return -EINVAL;
 		cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
 		cdq_mgmt.cdq_adm.entry_nbyte = cmd->adm.entry_nbyte;
 		cdq_mgmt.cdq_adm.entry_nr = cmd->adm.entry_nr;
 		cdq_mgmt.cdq_adm.cqs = cmd->adm.cqs;
 		cdq_mgmt.cdq_adm.mos = cmd->adm.mos;
+		cdq_mgmt.cdq_adm.cdqp_offset = cmd->adm.cdqp_offset;
+		cdq_mgmt.cdq_adm.cdqp_mask = cmd->adm.cdqp_mask;
 	} else if (cmd->flags == NVME_CDQ_ADM_FLAGS_DELETE) {
 		cdq_mgmt.op_type = NVME_CDQ_CMD_DELETE;
 		cdq_mgmt.cdq_adm.cdqid = cmd->adm.cdq_id;
 	} else
-		return -EFAULT;
+		return -EINVAL;
 
 	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
 	if (status)

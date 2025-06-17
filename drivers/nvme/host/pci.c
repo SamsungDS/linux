@@ -3160,9 +3160,8 @@ static int nvme_pci_cdq_create(struct nvme_dev *dev,
 	cdq->entry_nr = cdq_mgmt->cdq_adm.entry_nr;
 	cdq->dev = dev;
 
-	//FIXME: offset & mask are migration entry type. They need to be dynamic;
-	cdq->cdqp_offset = 32;
-	cdq->cdqp_mask = 0x1;
+	cdq->cdqp_offset = cdq_mgmt->cdq_adm.cdqp_offset;
+	cdq->cdqp_mask = cdq_mgmt->cdq_adm.cdqp_mask;
 
 	c.cdq.opcode = nvme_admin_cdq;
 	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
