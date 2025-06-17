@@ -560,8 +560,9 @@ struct nvme_cdq_mgmt {
 		struct {
 			u32 entry_nr;
 			u32 entry_nbyte;
-			u16 cntlid;
 			u16 cdqid;
+			u16 cqs;
+			u16 mos;
 		} cdq_adm;
 		struct {
 			u16 cdqid;

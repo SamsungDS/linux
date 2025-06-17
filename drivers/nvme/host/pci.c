@@ -126,7 +126,6 @@ struct cdq_nvme_queue {
 	uint cdqp_mask;
 	dma_addr_t entries_dma_addr;
 	u16 cdq_id;
-	u16 cntlid;
 	spinlock_t entries_lock;
 	struct file* filep;
 };
@@ -3119,34 +3118,6 @@ static void nvme_pci_cdq_free(struct nvme_dev *dev, struct cdq_nvme_queue *cdq)
 	kfree(cdq);
 }
 
-static int nvme_pci_cdq_create_sndcmd(struct nvme_dev *dev,
-				      struct cdq_nvme_queue *cdq)
-{
-	int ret;
-	struct nvme_command c = { };
-	union nvme_result result = { };
-
-	c.cdq.opcode = nvme_admin_cdq;
-	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
-
-	/* create a User Data Migration Queue */
-	c.cdq.mos |= cpu_to_le16(NVME_CDQ_MOS_CREATE_QT_UDMQ);
-	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
-	c.cdq.create.cqs = cpu_to_le16(cdq->cntlid);
-
-	/* >>2 because the size is in dwords */
-	c.cdq.cdqsize = (cdq->entry_nbyte * cdq->entry_nr) >> 2;
-	c.cdq.prp1 = cdq->entries_dma_addr;
-
-	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
-	if (ret)
-		return ret;
-
-	cdq->cdq_id = le16_to_cpu(result.u16);
-
-	return ret;
-}
-
 static int nvme_pci_cdq_delete(struct nvme_dev *dev,
 			       struct nvme_cdq_mgmt *cdq_mgmt)
 {
@@ -3176,6 +3147,8 @@ static int nvme_pci_cdq_create(struct nvme_dev *dev,
 {
 	int ret;
 	struct cdq_nvme_queue *cdq, *xa_ret;
+	struct nvme_command c = { };
+	union nvme_result result = { };
 
 	ret = nvme_pci_cdq_alloc(dev, &cdq,
 				 cdq_mgmt->cdq_adm.entry_nr,
@@ -3183,17 +3156,29 @@ static int nvme_pci_cdq_create(struct nvme_dev *dev,
 	if (ret)
 		return ret;
 
-	//FIXME: offset & mask are migration entry type. They need to be dynamic;
-	cdq->cdqp_offset = 32;
-	cdq->cdqp_mask = 0x1;
 	cdq->entry_nbyte = cdq_mgmt->cdq_adm.entry_nbyte;
 	cdq->entry_nr = cdq_mgmt->cdq_adm.entry_nr;
 	cdq->dev = dev;
-	cdq->cntlid = cdq_mgmt->cdq_adm.cntlid;
 
-	ret = nvme_pci_cdq_create_sndcmd(dev, cdq);
+	//FIXME: offset & mask are migration entry type. They need to be dynamic;
+	cdq->cdqp_offset = 32;
+	cdq->cdqp_mask = 0x1;
+
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
+	c.cdq.mos = cpu_to_le16(cdq_mgmt->cdq_adm.mos);
+	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
+	c.cdq.create.cqs = cpu_to_le16(cdq_mgmt->cdq_adm.cqs);
+
+	/* >>2: size is in dwords */
+	c.cdq.cdqsize = (cdq_mgmt->cdq_adm.entry_nbyte *
+			 cdq_mgmt->cdq_adm.entry_nr) >> 2;
+	c.cdq.prp1 = cdq->entries_dma_addr;
+
+	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
 	if (ret)
 		goto err_cdq_free;
+	cdq->cdq_id = le16_to_cpu(result.u16);
 
 	xa_ret = xa_store(&dev->cdqs, cdq->cdq_id, cdq, GFP_KERNEL);
 	if (xa_is_err(xa_ret)) {

@@ -398,7 +398,8 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 		cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
 		cdq_mgmt.cdq_adm.entry_nbyte = cmd->adm.entry_nbyte;
 		cdq_mgmt.cdq_adm.entry_nr = cmd->adm.entry_nr;
-		cdq_mgmt.cdq_adm.cntlid = cmd->adm.cntlid;
+		cdq_mgmt.cdq_adm.cqs = cmd->adm.cqs;
+		cdq_mgmt.cdq_adm.mos = cmd->adm.mos;
 	} else if (cmd->flags == NVME_CDQ_ADM_FLAGS_DELETE) {
 		cdq_mgmt.op_type = NVME_CDQ_CMD_DELETE;
 		cdq_mgmt.cdq_adm.cdqid = cmd->adm.cdq_id;

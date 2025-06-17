@@ -1499,8 +1499,6 @@ struct nvme_cdq {
 #define NVME_CDQ_SEL_DELETE_CDQ			0x1
 	__u8			sel;
 	__u8			rsvd10;
-#define NVME_CDQ_MOS_CREATE_QT_MASK	0x00ff
-#define NVME_CDQ_MOS_CREATE_QT_UDMQ	0x0000
 	__le16			mos;
 	union {
 		struct {
