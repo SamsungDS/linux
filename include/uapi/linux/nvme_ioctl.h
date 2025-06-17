@@ -97,13 +97,14 @@ struct nvme_cdq_cmd {
 	__u32	flags;
 #define NVME_CDQ_ADM_FLAGS_READFD	(1 << 0)
 #define NVME_CDQ_ADM_FLAGS_CREATE	(1 << 1)
+#define NVME_CDQ_ADM_FLAGS_DELETE	(1 << 2)
 	union {
 		struct {
 			__u32	entry_nr;
 			__u32	entry_nbyte;
 			__u16	cntlid;
 			__u16	cdq_id;
-		} create;
+		} adm;
 		struct {
 			__u16	cdqid;
 			int read_fd;

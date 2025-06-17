@@ -1507,7 +1507,11 @@ struct nvme_cdq {
 #define NVME_CDQ_CFG_PC_CONT	(1 << 0)
 			__le16	cdq_flags;
 			__le16	cqs;
-		} create_cdq;
+		} create;
+		struct {
+			__le16	cdqid;
+			__le16	rsvd;
+		} delete;
 	};
 	__le32			cdqsize;
 	__u32			rsvd13[2];

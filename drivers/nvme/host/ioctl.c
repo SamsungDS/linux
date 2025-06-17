@@ -387,25 +387,34 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
-static int nvme_user_cdq_create(struct nvme_ctrl *ctrl,
-				struct nvme_cdq_cmd *cmd,
-				struct nvme_cdq_cmd __user *ucmd)
+static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
+			      struct nvme_cdq_cmd *cmd,
+			      struct nvme_cdq_cmd __user *ucmd)
 {
 	int status;
-	struct nvme_cdq_mgmt cdq_mgmt = {};
+	struct nvme_cdq_mgmt cdq_mgmt;
 
-	cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
-	cdq_mgmt.cdq_create.cntlid = cmd->create.cntlid;
-	cdq_mgmt.cdq_create.entry_nbyte = cmd->create.entry_nbyte;
-	cdq_mgmt.cdq_create.entry_nr = cmd->create.entry_nr;
+	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
+		cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
+		cdq_mgmt.cdq_adm.entry_nbyte = cmd->adm.entry_nbyte;
+		cdq_mgmt.cdq_adm.entry_nr = cmd->adm.entry_nr;
+		cdq_mgmt.cdq_adm.cntlid = cmd->adm.cntlid;
+	} else if (cmd->flags == NVME_CDQ_ADM_FLAGS_DELETE) {
+		cdq_mgmt.op_type = NVME_CDQ_CMD_DELETE;
+		cdq_mgmt.cdq_adm.cdqid = cmd->adm.cdq_id;
+	} else
+		return -EFAULT;
+
 	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-
 	if (status)
 		return status;
 
-	cmd->create.cdq_id = cdq_mgmt.cdq_create.ret_cdqid;
-	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
-		return -EFAULT;
+	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
+		cmd->adm.cdq_id = cdq_mgmt.cdq_adm.cdqid;
+
+		if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
+			return -EFAULT;
+	}
 
 	return status;
 }
@@ -440,7 +449,8 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 
 	switch (cmd.flags) {
 	case NVME_CDQ_ADM_FLAGS_CREATE:
-		return nvme_user_cdq_create(ctrl, &cmd, ucmd);
+	case NVME_CDQ_ADM_FLAGS_DELETE:
+		return nvme_user_cdq_mgmt(ctrl, &cmd, ucmd);
 	case NVME_CDQ_ADM_FLAGS_READFD:
 		return nvme_user_cdq_readfd(ctrl, &cmd, ucmd);
 	}
