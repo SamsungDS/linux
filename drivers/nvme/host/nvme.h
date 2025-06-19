@@ -565,6 +565,7 @@ struct nvme_cdq_mgmt {
 			u16 mos;
 			u32 cdqp_offset;
 			u32 cdqp_mask;
+			int readfd;
 		} cdq_adm;
 		struct {
 			u16 cdqid;

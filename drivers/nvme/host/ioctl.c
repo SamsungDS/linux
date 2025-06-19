@@ -416,6 +416,7 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 
 	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
 		cmd->adm.cdq_id = cdq_mgmt.cdq_adm.cdqid;
+		cmd->adm.read_fd = cdq_mgmt.cdq_adm.readfd;
 
 		if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 			return -EFAULT;
