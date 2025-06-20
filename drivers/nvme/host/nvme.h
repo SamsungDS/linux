@@ -554,24 +554,15 @@ static inline bool nvme_ns_has_pi(struct nvme_ns_head *head)
 struct nvme_cdq_mgmt {
 #define NVME_CDQ_CMD_CREATE		(1 << 0)
 #define NVME_CDQ_CMD_DELETE		(1 << 1)
-#define NVME_CDQ_CMD_READFD		(1 << 2)
 	unsigned int op_type;
-	union {
-		struct {
-			u32 entry_nr;
-			u32 entry_nbyte;
-			u16 cdqid;
-			u16 cqs;
-			u16 mos;
-			u32 cdqp_offset;
-			u32 cdqp_mask;
-			int readfd;
-		} cdq_adm;
-		struct {
-			u16 cdqid;
-			int readfd;
-		} readfd;
-	};
+	u32 entry_nr;
+	u32 entry_nbyte;
+	u16 cdqid;
+	u16 cqs;
+	u16 mos;
+	u32 cdqp_offset;
+	u32 cdqp_mask;
+	int readfd;
 };
 
 struct nvme_ctrl_ops {

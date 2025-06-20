@@ -3125,7 +3125,7 @@ static int nvme_pci_cdq_delete(struct nvme_dev *dev,
 	struct cdq_nvme_queue *cdq;
 	struct nvme_command c = { };
 
-	cdq = xa_erase(&dev->cdqs, cdq_mgmt->cdq_adm.cdqid);
+	cdq = xa_erase(&dev->cdqs, cdq_mgmt->cdqid);
 	if (!cdq)
 		return -EINVAL;
 
@@ -3299,27 +3299,27 @@ static int nvme_pci_cdq_create(struct nvme_dev *dev,
 	union nvme_result result = { };
 
 	ret = nvme_pci_cdq_alloc(dev, &cdq,
-				 cdq_mgmt->cdq_adm.entry_nr,
-				 cdq_mgmt->cdq_adm.entry_nbyte);
+				 cdq_mgmt->entry_nr,
+				 cdq_mgmt->entry_nbyte);
 	if (ret)
 		return ret;
 
-	cdq->entry_nbyte = cdq_mgmt->cdq_adm.entry_nbyte;
-	cdq->entry_nr = cdq_mgmt->cdq_adm.entry_nr;
+	cdq->entry_nbyte = cdq_mgmt->entry_nbyte;
+	cdq->entry_nr = cdq_mgmt->entry_nr;
 	cdq->dev = dev;
 
-	cdq->cdqp_offset = cdq_mgmt->cdq_adm.cdqp_offset;
-	cdq->cdqp_mask = cdq_mgmt->cdq_adm.cdqp_mask;
+	cdq->cdqp_offset = cdq_mgmt->cdqp_offset;
+	cdq->cdqp_mask = cdq_mgmt->cdqp_mask;
 
 	c.cdq.opcode = nvme_admin_cdq;
 	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
-	c.cdq.mos = cpu_to_le16(cdq_mgmt->cdq_adm.mos);
+	c.cdq.mos = cpu_to_le16(cdq_mgmt->mos);
 	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
-	c.cdq.create.cqs = cpu_to_le16(cdq_mgmt->cdq_adm.cqs);
+	c.cdq.create.cqs = cpu_to_le16(cdq_mgmt->cqs);
 
 	/* >>2: size is in dwords */
-	c.cdq.cdqsize = (cdq_mgmt->cdq_adm.entry_nbyte *
-			 cdq_mgmt->cdq_adm.entry_nr) >> 2;
+	c.cdq.cdqsize = (cdq_mgmt->entry_nbyte *
+			 cdq_mgmt->entry_nr) >> 2;
 	c.cdq.prp1 = cdq->entries_dma_addr;
 
 	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
@@ -3337,8 +3337,8 @@ static int nvme_pci_cdq_create(struct nvme_dev *dev,
 	if (ret)
 		goto err_cdq_free;
 
-	cdq_mgmt->cdq_adm.cdqid = cdq->cdq_id;
-	cdq_mgmt->cdq_adm.readfd = fdno;
+	cdq_mgmt->cdqid = cdq->cdq_id;
+	cdq_mgmt->readfd = fdno;
 
 	return 0;
 
@@ -3348,23 +3348,6 @@ err_cdq_free:
 	return ret;
 }
 
-static int nvme_pci_cdq_cmd_readfd(struct nvme_dev *dev,
-				   struct nvme_cdq_mgmt *cdq_mgmt)
-{
-	int fdno, ret = 0;
-	struct cdq_nvme_queue* cdq = xa_load(&dev->cdqs, cdq_mgmt->readfd.cdqid);
-	if (!cdq)
-		return -EINVAL;
-
-	ret = nvme_pci_cdq_fd(dev, cdq, &fdno);
-	if (ret)
-		return ret;
-
-	cdq_mgmt->readfd.readfd = fdno;
-
-	return 0;
-}
-
 static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
 {
 	struct nvme_dev *dev = to_nvme_dev(ctrl);
@@ -3372,8 +3355,6 @@ static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_m
 		return nvme_pci_cdq_create(dev, cdq_mgmt);
 	if (cdq_mgmt->op_type & NVME_CDQ_CMD_DELETE)
 		return nvme_pci_cdq_delete(dev, cdq_mgmt);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_READFD)
-		return nvme_pci_cdq_cmd_readfd(dev, cdq_mgmt);
 
 	return -EINVAL;
 }

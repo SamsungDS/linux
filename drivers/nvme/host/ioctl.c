@@ -395,18 +395,18 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 	struct nvme_cdq_mgmt cdq_mgmt;
 
 	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
-		if (cmd->adm.entry_nbyte < cmd->adm.cdqp_offset)
+		if (cmd->entry_nbyte < cmd->cdqp_offset)
 			return -EINVAL;
 		cdq_mgmt.op_type = NVME_CDQ_CMD_CREATE;
-		cdq_mgmt.cdq_adm.entry_nbyte = cmd->adm.entry_nbyte;
-		cdq_mgmt.cdq_adm.entry_nr = cmd->adm.entry_nr;
-		cdq_mgmt.cdq_adm.cqs = cmd->adm.cqs;
-		cdq_mgmt.cdq_adm.mos = cmd->adm.mos;
-		cdq_mgmt.cdq_adm.cdqp_offset = cmd->adm.cdqp_offset;
-		cdq_mgmt.cdq_adm.cdqp_mask = cmd->adm.cdqp_mask;
+		cdq_mgmt.entry_nbyte = cmd->entry_nbyte;
+		cdq_mgmt.entry_nr = cmd->entry_nr;
+		cdq_mgmt.cqs = cmd->cqs;
+		cdq_mgmt.mos = cmd->mos;
+		cdq_mgmt.cdqp_offset = cmd->cdqp_offset;
+		cdq_mgmt.cdqp_mask = cmd->cdqp_mask;
 	} else if (cmd->flags == NVME_CDQ_ADM_FLAGS_DELETE) {
 		cdq_mgmt.op_type = NVME_CDQ_CMD_DELETE;
-		cdq_mgmt.cdq_adm.cdqid = cmd->adm.cdq_id;
+		cdq_mgmt.cdqid = cmd->cdq_id;
 	} else
 		return -EINVAL;
 
@@ -415,32 +415,12 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 		return status;
 
 	if (cmd->flags == NVME_CDQ_ADM_FLAGS_CREATE) {
-		cmd->adm.cdq_id = cdq_mgmt.cdq_adm.cdqid;
-		cmd->adm.read_fd = cdq_mgmt.cdq_adm.readfd;
+		cmd->cdq_id = cdq_mgmt.cdqid;
+		cmd->read_fd = cdq_mgmt.readfd;
 
 		if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
 			return -EFAULT;
 	}
-
-	return status;
-}
-
-static int nvme_user_cdq_readfd(struct nvme_ctrl *ctrl,
-				struct nvme_cdq_cmd *cmd,
-				struct nvme_cdq_cmd __user *ucmd)
-{
-	int status;
-	struct nvme_cdq_mgmt cdq_mgmt = {};
-	cdq_mgmt.op_type = NVME_CDQ_CMD_READFD;
-	cdq_mgmt.readfd.cdqid = cmd->readfd.cdqid;
-	status = ctrl->ops->manage_cdq_queues(ctrl, &cdq_mgmt);
-
-	if (status)
-		return status;
-
-	cmd->readfd.read_fd = cdq_mgmt.readfd.readfd;
-	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
-		return -EFAULT;
 
 	return status;
 }
@@ -458,8 +438,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	case NVME_CDQ_ADM_FLAGS_CREATE:
 	case NVME_CDQ_ADM_FLAGS_DELETE:
 		return nvme_user_cdq_mgmt(ctrl, &cmd, ucmd);
-	case NVME_CDQ_ADM_FLAGS_READFD:
-		return nvme_user_cdq_readfd(ctrl, &cmd, ucmd);
 	}
 
 	return -EPERM;

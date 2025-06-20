@@ -98,22 +98,14 @@ struct nvme_cdq_cmd {
 #define NVME_CDQ_ADM_FLAGS_READFD	(1 << 0)
 #define NVME_CDQ_ADM_FLAGS_CREATE	(1 << 1)
 #define NVME_CDQ_ADM_FLAGS_DELETE	(1 << 2)
-	union {
-		struct {
-			__u32	entry_nr;
-			__u32	entry_nbyte;
-			__u16	cdq_id;
-			__u16	cqs;
-			__u16	mos;
-			__u32	cdqp_offset;
-			__u32	cdqp_mask;
-			int	read_fd;
-		} adm;
-		struct {
-			__u16	cdqid;
-			int read_fd;
-		}readfd;
-	};
+	__u32	entry_nr;
+	__u32	entry_nbyte;
+	__u16	cdq_id;
+	__u16	cqs;
+	__u16	mos;
+	__u32	cdqp_offset;
+	__u32	cdqp_mask;
+	int	read_fd;
 };
 
 #define nvme_admin_cmd nvme_passthru_cmd
