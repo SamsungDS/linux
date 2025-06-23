@@ -566,7 +566,6 @@ struct cdq_nvme_queue {
 	uint cdqp_mask;
 	dma_addr_t entries_dma_addr;
 	u16 cdq_id;
-	spinlock_t entries_lock;
 	struct file* filep;
 };
 

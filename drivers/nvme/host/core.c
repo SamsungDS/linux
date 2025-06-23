@@ -1247,7 +1247,6 @@ static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
 	return 0;
 }
 
-
 static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
 	dma_free_coherent(ctrl->dev, cdq->entry_nr * cdq->entry_nbyte,
@@ -1303,14 +1302,12 @@ static ssize_t nvme_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
 	ssize_t tx_nentry = 0; /* transfered num entries */
 	size_t target_nentry = 0; /* target num entries */
 
-	spin_lock(&cdq->entries_lock);
 	u32 init_entry = cdq->curr_entry;
 	for (;target_nentry < max_nentry && nvme_cdq_is_tip_new(cdq);
 	     ++target_nentry) {
 		nvme_cdq_next(cdq);
 	}
 	tx_nentry = consume(init_entry, target_nentry, cdq, priv_data);
-	spin_unlock(&cdq->entries_lock);
 	if (tx_nentry < 0)
 		return tx_nentry;
 	if (tx_nentry != target_nentry)
