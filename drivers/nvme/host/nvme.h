@@ -570,20 +570,6 @@ struct cdq_nvme_queue {
 	struct file* filep;
 };
 
-struct nvme_cdq_mgmt {
-#define NVME_CDQ_CMD_CREATE		(1 << 0)
-#define NVME_CDQ_CMD_DELETE		(1 << 1)
-	unsigned int op_type;
-	u32 entry_nr;
-	u32 entry_nbyte;
-	u16 cdqid;
-	u16 cqs;
-	u16 mos;
-	u32 cdqp_offset;
-	u32 cdqp_mask;
-	int readfd;
-};
-
 struct nvme_ctrl_ops {
 	const char *name;
 	struct module *module;
@@ -604,7 +590,6 @@ struct nvme_ctrl_ops {
 	int (*get_address)(struct nvme_ctrl *ctrl, char *buf, int size);
 	void (*print_device_info)(struct nvme_ctrl *ctrl);
 	bool (*supports_pci_p2pdma)(struct nvme_ctrl *ctrl);
-	int (*manage_cdq_queues)(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt);
 };
 
 /*

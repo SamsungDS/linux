@@ -29,7 +29,6 @@
 #include <linux/sed-opal.h>
 #include <linux/pci-p2pdma.h>
 #include <linux/delay.h>
-#include <linux/anon_inodes.h>
 
 #include "trace.h"
 #include "nvme.h"
@@ -166,9 +165,6 @@ struct nvme_dev {
 	unsigned int nr_allocated_queues;
 	unsigned int nr_write_queues;
 	unsigned int nr_poll_queues;
-
-	/* Controller Data Queue support */
-	struct xarray cdqs;
 };
 
 static int io_queue_depth_set(const char *val, const struct kernel_param *kp)
@@ -3066,284 +3062,6 @@ static bool nvme_pci_supports_pci_p2pdma(struct nvme_ctrl *ctrl)
 	return dma_pci_p2pdma_supported(dev->dev);
 }
 
-static int nvme_pci_cdq_alloc(struct nvme_dev *dev,
-			      struct cdq_nvme_queue **cdq,
-			      u32 entry_nr, u32 entry_nbyte)
-{
-	struct cdq_nvme_queue *ret_cdq = kzalloc(sizeof(*ret_cdq), GFP_KERNEL);
-	if (!ret_cdq)
-		return -ENOMEM;
-
-	ret_cdq->entries = dma_alloc_coherent(dev->dev,
-					      entry_nr * entry_nbyte,
-					      &ret_cdq->entries_dma_addr,
-					      GFP_KERNEL);
-	if (!ret_cdq->entries) {
-		kfree(ret_cdq);
-		return -ENOMEM;
-	}
-
-	ret_cdq->entry_nbyte = entry_nbyte;
-	ret_cdq->entry_nr = entry_nr;
-	ret_cdq->dev = dev;
-
-	//FIXME: These are for the migration entry type. They need to be dynamic;
-	ret_cdq->cdqp_offset = 32;
-	ret_cdq->cdqp_mask = 0x1;
-
-	*cdq = ret_cdq;
-
-	return 0;
-}
-
-static void nvme_pci_cdq_free(struct nvme_dev *dev, struct cdq_nvme_queue *cdq)
-{
-	dma_free_coherent(dev->dev, cdq->entry_nr * cdq->entry_nbyte,
-			  cdq->entries, cdq->entries_dma_addr);
-	kfree(cdq);
-}
-
-static int nvme_pci_cdq_delete(struct nvme_dev *dev,
-			       struct nvme_cdq_mgmt *cdq_mgmt)
-{
-	int ret;
-	struct cdq_nvme_queue *cdq;
-	struct nvme_command c = { };
-
-	cdq = xa_erase(&dev->cdqs, cdq_mgmt->cdqid);
-	if (!cdq)
-		return -EINVAL;
-
-	c.cdq.opcode = nvme_admin_cdq;
-	c.cdq.sel = NVME_CDQ_SEL_DELETE_CDQ;
-	c.cdq.delete.cdqid = cdq->cdq_id;
-
-	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, NULL, NULL, 0, NVME_QID_ANY, 0);
-	if (ret)
-		return ret;
-
-	nvme_pci_cdq_free(dev, cdq);
-
-	return 0;
-}
-
-static int nvme_pci_cdq_is_tip_new(const struct cdq_nvme_queue *cdq)
-{
-	void *tip = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
-	/* if different, then its new! */
-	return (*(u8*)(tip + cdq->cdqp_offset) & cdq->cdqp_mask) != cdq->curr_cdqp;
-}
-
-static void nvme_pci_cdq_next(struct cdq_nvme_queue *cdq)
-{
-	if (cdq->curr_entry + 1 == cdq->entry_nr) {
-		cdq->curr_entry = 0;
-		cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
-	} else {
-		cdq->curr_entry++;
-	}
-}
-
-static int nvme_pci_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
-{
-	struct nvme_command c = { };
-	c.features.opcode = nvme_admin_set_features;
-	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
-	c.features.dword11 = cdq->cdq_id;
-	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
-
-	return nvme_submit_sync_cmd(cdq->dev->ctrl.admin_q, &c, NULL, 0);
-}
-
-/*
- * Traverse the CDQ until max entries are reached or until the entry phase
- * bit is the same as the current phase bit.
- *
- * cdq : Controller Data Queue
- * max_nentry : Max entries to "traverse" before sending feature id
- * consume : Executed after exhausting traversal and before seinding the nvme feature id
- * priv_data : argument for consume
- */
-static ssize_t nvme_pci_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
-				     ssize_t (*consume)(const u32 init_entry,
-							const size_t tx_nentry,
-							struct cdq_nvme_queue* cdq,
-							void* priv_data),
-				     void *priv_data)
-{
-	int ret;
-	ssize_t tx_nentry = 0; /* transfered num entries */
-	size_t target_nentry = 0; /* target num entries */
-
-	spin_lock(&cdq->entries_lock);
-	u32 init_entry = cdq->curr_entry;
-	for (;target_nentry < max_nentry && nvme_pci_cdq_is_tip_new(cdq);
-	     ++target_nentry) {
-		nvme_pci_cdq_next(cdq);
-	}
-	tx_nentry = consume(init_entry, target_nentry, cdq, priv_data);
-	spin_unlock(&cdq->entries_lock);
-	if (tx_nentry < 0)
-		return tx_nentry;
-	if (tx_nentry != target_nentry)
-		return -EIO;
-
-	ret = nvme_pci_cdq_send_feature_id(cdq);
-	if (ret < 0)
-		return ret;
-
-	return tx_nentry;
-}
-
-static ssize_t nvme_pci_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
-					      struct cdq_nvme_queue* cdq, void* priv)
-{
-	char __user *buf = priv;
-	void *entries_start;
-	size_t copy_nentry = min(cdq->entry_nr - init_entry, tx_nentry);
-
-	entries_start = cdq->entries + (init_entry * cdq->entry_nbyte);
-	if (copy_to_user(buf, entries_start, copy_nentry * cdq->entry_nbyte))
-		return -EFAULT;
-
-	if (copy_nentry == tx_nentry)
-		return tx_nentry;
-
-	/* Copy the entries that have been wrapped around */
-	buf += (copy_nentry * cdq->entry_nbyte);
-	copy_nentry = tx_nentry - copy_nentry;
-	if (copy_to_user(buf, cdq->entries, copy_nentry * cdq->entry_nbyte))
-		return -EFAULT;
-
-	return tx_nentry;
-}
-
-static ssize_t nvme_pci_cdq_fops_read(struct file *filep, char __user *buf,
-				      size_t count, loff_t *ppos)
-{
-	struct cdq_nvme_queue *cdq = filep->private_data;
-	size_t max_nentry = count / cdq->entry_nbyte;
-	if (*ppos)
-		return -ESPIPE;
-
-	if (count < cdq->entry_nbyte)
-		return -EINVAL;
-
-	if (max_nentry > cdq->entry_nr)
-		return -EINVAL;
-
-	return nvme_pci_cdq_traverse(cdq, max_nentry, nvme_pci_cdq_consume_fops_read, buf);
-}
-
-static const struct file_operations cdq_fops = {
-	.owner		= THIS_MODULE,
-	.open		= nonseekable_open,
-	.read		= nvme_pci_cdq_fops_read,
-};
-
-static int nvme_pci_cdq_fd(struct nvme_dev *dev, struct cdq_nvme_queue *cdq, int *fdno)
-{
-	int ret = 0;
-	struct file *filep;
-
-	*fdno = -1;
-
-	if (cdq->filep)
-		return -EINVAL;
-
-	filep = anon_inode_getfile("[cdq-readfd]", &cdq_fops, cdq, O_RDWR);
-	if (IS_ERR(filep)) {
-		ret = PTR_ERR(filep);
-		goto out;
-	}
-
-	*fdno = get_unused_fd_flags(O_CLOEXEC | O_RDONLY | O_DIRECT);
-	if (*fdno < 0) {
-		ret = *fdno;
-		goto out_fput;
-	}
-
-	fd_install(*fdno, filep);
-	cdq->filep = filep;
-
-	return 0;
-
-out_fput:
-	put_unused_fd(*fdno);
-	fput(filep);
-out:
-	return ret;
-}
-
-static int nvme_pci_cdq_create(struct nvme_dev *dev,
-			       struct nvme_cdq_mgmt *cdq_mgmt)
-{
-	int ret, fdno;
-	struct cdq_nvme_queue *cdq, *xa_ret;
-	struct nvme_command c = { };
-	union nvme_result result = { };
-
-	ret = nvme_pci_cdq_alloc(dev, &cdq,
-				 cdq_mgmt->entry_nr,
-				 cdq_mgmt->entry_nbyte);
-	if (ret)
-		return ret;
-
-	cdq->entry_nbyte = cdq_mgmt->entry_nbyte;
-	cdq->entry_nr = cdq_mgmt->entry_nr;
-	cdq->dev = dev;
-
-	cdq->cdqp_offset = cdq_mgmt->cdqp_offset;
-	cdq->cdqp_mask = cdq_mgmt->cdqp_mask;
-
-	c.cdq.opcode = nvme_admin_cdq;
-	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
-	c.cdq.mos = cpu_to_le16(cdq_mgmt->mos);
-	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
-	c.cdq.create.cqs = cpu_to_le16(cdq_mgmt->cqs);
-
-	/* >>2: size is in dwords */
-	c.cdq.cdqsize = (cdq_mgmt->entry_nbyte *
-			 cdq_mgmt->entry_nr) >> 2;
-	c.cdq.prp1 = cdq->entries_dma_addr;
-
-	ret = __nvme_submit_sync_cmd(dev->ctrl.admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
-	if (ret)
-		goto err_cdq_free;
-	cdq->cdq_id = le16_to_cpu(result.u16);
-
-	xa_ret = xa_store(&dev->cdqs, cdq->cdq_id, cdq, GFP_KERNEL);
-	if (xa_is_err(xa_ret)) {
-		ret = xa_err(xa_ret);
-		goto err_cdq_free;
-	}
-
-	ret = nvme_pci_cdq_fd(dev, cdq, &fdno);
-	if (ret)
-		goto err_cdq_free;
-
-	cdq_mgmt->cdqid = cdq->cdq_id;
-	cdq_mgmt->readfd = fdno;
-
-	return 0;
-
-err_cdq_free:
-	nvme_pci_cdq_free(dev, cdq);
-
-	return ret;
-}
-
-static int nvme_pci_cdq_mgmt(struct nvme_ctrl *ctrl, struct nvme_cdq_mgmt* cdq_mgmt)
-{
-	struct nvme_dev *dev = to_nvme_dev(ctrl);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_CREATE)
-		return nvme_pci_cdq_create(dev, cdq_mgmt);
-	if (cdq_mgmt->op_type & NVME_CDQ_CMD_DELETE)
-		return nvme_pci_cdq_delete(dev, cdq_mgmt);
-
-	return -EINVAL;
-}
-
 static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.name			= "pcie",
 	.module			= THIS_MODULE,
@@ -3358,7 +3076,6 @@ static const struct nvme_ctrl_ops nvme_pci_ctrl_ops = {
 	.get_address		= nvme_pci_get_address,
 	.print_device_info	= nvme_pci_print_device_info,
 	.supports_pci_p2pdma	= nvme_pci_supports_pci_p2pdma,
-	.manage_cdq_queues	= nvme_pci_cdq_mgmt,
 };
 
 static int nvme_dev_map(struct nvme_dev *dev)
@@ -3472,7 +3189,6 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	if (!dev->queues)
 		goto out_free_dev;
 
-	xa_init(&dev->cdqs);
 	dev->dev = get_device(&pdev->dev);
 
 	quirks |= check_vendor_combination_bug(pdev);
