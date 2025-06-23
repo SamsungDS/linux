@@ -115,21 +115,6 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown);
 static void nvme_delete_io_queues(struct nvme_dev *dev);
 static void nvme_update_attrs(struct nvme_dev *dev);
 
-struct cdq_nvme_queue {
-	struct nvme_dev *dev;
-	void *entries;
-	u32 entry_nbyte;
-	u32 entry_nr;
-	u32 curr_entry;
-	u8 curr_cdqp;
-	uint cdqp_offset;
-	uint cdqp_mask;
-	dma_addr_t entries_dma_addr;
-	u16 cdq_id;
-	spinlock_t entries_lock;
-	struct file* filep;
-};
-
 /*
  * Represents an NVM Express device.  Each nvme_dev is a PCI function.
  */

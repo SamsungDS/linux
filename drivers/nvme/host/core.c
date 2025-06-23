@@ -23,6 +23,7 @@
 #include <linux/pm_qos.h>
 #include <linux/ratelimit.h>
 #include <linux/unaligned.h>
+#include <linux/anon_inodes.h>
 
 #include "nvme.h"
 #include "fabrics.h"
@@ -1224,6 +1225,259 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 	return effects;
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
+
+static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
+			  u32 entry_nr, u32 entry_nbyte)
+{
+	struct cdq_nvme_queue *ret_cdq = kzalloc(sizeof(*ret_cdq), GFP_KERNEL);
+	if (!ret_cdq)
+		return -ENOMEM;
+
+	ret_cdq->entries = dma_alloc_coherent(ctrl->dev,
+					      entry_nr * entry_nbyte,
+					      &ret_cdq->entries_dma_addr,
+					      GFP_KERNEL);
+	if (!ret_cdq->entries) {
+		kfree(ret_cdq);
+		return -ENOMEM;
+	}
+
+	*cdq = ret_cdq;
+
+	return 0;
+}
+
+
+static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
+{
+	dma_free_coherent(ctrl->dev, cdq->entry_nr * cdq->entry_nbyte,
+			  cdq->entries, cdq->entries_dma_addr);
+	kfree(cdq);
+}
+
+static int nvme_cdq_is_tip_new(const struct cdq_nvme_queue *cdq)
+{
+	void *tip = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
+	/* if different, then its new! */
+	return (*(u8*)(tip + cdq->cdqp_offset) & cdq->cdqp_mask) != cdq->curr_cdqp;
+}
+
+static void nvme_cdq_next(struct cdq_nvme_queue *cdq)
+{
+	if (cdq->curr_entry + 1 == cdq->entry_nr) {
+		cdq->curr_entry = 0;
+		cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
+	} else {
+		cdq->curr_entry++;
+	}
+}
+
+static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
+{
+	struct nvme_command c = { };
+	c.features.opcode = nvme_admin_set_features;
+	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
+	c.features.dword11 = cdq->cdq_id;
+	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
+
+	return nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, NULL, 0);
+}
+
+/*
+ * Traverse the CDQ until max entries are reached or until the entry phase
+ * bit is the same as the current phase bit.
+ *
+ * cdq : Controller Data Queue
+ * max_nentry : Max entries to "traverse" before sending feature id
+ * consume : Executed after exhausting traversal and before seinding the nvme feature id
+ * priv_data : argument for consume
+ */
+static ssize_t nvme_cdq_traverse(struct cdq_nvme_queue* cdq, size_t max_nentry,
+				     ssize_t (*consume)(const u32 init_entry,
+							const size_t tx_nentry,
+							struct cdq_nvme_queue* cdq,
+							void* priv_data),
+				     void *priv_data)
+{
+	int ret;
+	ssize_t tx_nentry = 0; /* transfered num entries */
+	size_t target_nentry = 0; /* target num entries */
+
+	spin_lock(&cdq->entries_lock);
+	u32 init_entry = cdq->curr_entry;
+	for (;target_nentry < max_nentry && nvme_cdq_is_tip_new(cdq);
+	     ++target_nentry) {
+		nvme_cdq_next(cdq);
+	}
+	tx_nentry = consume(init_entry, target_nentry, cdq, priv_data);
+	spin_unlock(&cdq->entries_lock);
+	if (tx_nentry < 0)
+		return tx_nentry;
+	if (tx_nentry != target_nentry)
+		return -EIO;
+
+	ret = nvme_cdq_send_feature_id(cdq);
+	if (ret < 0)
+		return ret;
+
+	return tx_nentry;
+}
+
+static ssize_t nvme_cdq_consume_fops_read(const u32 init_entry, const size_t tx_nentry,
+					      struct cdq_nvme_queue* cdq, void* priv)
+{
+	char __user *buf = priv;
+	void *entries_start;
+	size_t copy_nentry = min(cdq->entry_nr - init_entry, tx_nentry);
+
+	entries_start = cdq->entries + (init_entry * cdq->entry_nbyte);
+	if (copy_to_user(buf, entries_start, copy_nentry * cdq->entry_nbyte))
+		return -EFAULT;
+
+	if (copy_nentry == tx_nentry)
+		return tx_nentry;
+
+	/* Copy the entries that have been wrapped around */
+	buf += (copy_nentry * cdq->entry_nbyte);
+	copy_nentry = tx_nentry - copy_nentry;
+	if (copy_to_user(buf, cdq->entries, copy_nentry * cdq->entry_nbyte))
+		return -EFAULT;
+
+	return tx_nentry;
+}
+
+static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
+				  size_t count, loff_t *ppos)
+{
+	struct cdq_nvme_queue *cdq = filep->private_data;
+	size_t max_nentry = count / cdq->entry_nbyte;
+	if (*ppos)
+		return -ESPIPE;
+
+	if (count < cdq->entry_nbyte)
+		return -EINVAL;
+
+	if (max_nentry > cdq->entry_nr)
+		return -EINVAL;
+
+	return nvme_cdq_traverse(cdq, max_nentry, nvme_cdq_consume_fops_read, buf);
+}
+
+static const struct file_operations cdq_fops = {
+	.owner		= THIS_MODULE,
+	.open		= nonseekable_open,
+	.read		= nvme_cdq_fops_read,
+};
+
+static int nvme_cdq_fd(struct cdq_nvme_queue *cdq, int *fdno)
+{
+	int ret = 0;
+	struct file *filep;
+
+	*fdno = -1;
+
+	if (cdq->filep)
+		return -EINVAL;
+
+	filep = anon_inode_getfile("[cdq-readfd]", &cdq_fops, cdq, O_RDWR);
+	if (IS_ERR(filep)) {
+		ret = PTR_ERR(filep);
+		goto out;
+	}
+
+	*fdno = get_unused_fd_flags(O_CLOEXEC | O_RDONLY | O_DIRECT);
+	if (*fdno < 0) {
+		ret = *fdno;
+		goto out_fput;
+	}
+
+	fd_install(*fdno, filep);
+	cdq->filep = filep;
+
+	return 0;
+
+out_fput:
+	put_unused_fd(*fdno);
+	fput(filep);
+out:
+	return ret;
+}
+
+int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
+		    const u32 entry_nr, const u32 entry_nbyte,
+		    uint cdqp_offset, uint cdqp_mask,
+		    u16 *cdq_id, int *cdq_fd)
+{
+	int ret, fdno;
+	struct cdq_nvme_queue *cdq, *xa_ret;
+	union nvme_result result = { };
+
+	ret = nvme_cdq_alloc(ctrl, &cdq, entry_nr, entry_nbyte);
+	if (ret)
+		return ret;
+	c->cdq.prp1 = cdq->entries_dma_addr;
+
+	ret = __nvme_submit_sync_cmd(ctrl->admin_q, c, &result, NULL, 0, NVME_QID_ANY, 0);
+	if (ret)
+		goto err_cdq_free;
+
+	cdq->cdq_id = le16_to_cpu(result.u16);
+	cdq->entry_nbyte = entry_nbyte;
+	cdq->entry_nr = entry_nr;
+	cdq->ctrl = ctrl;
+	cdq->cdqp_offset = cdqp_offset;
+	cdq->cdqp_mask = cdqp_mask;
+
+	xa_ret = xa_store(&ctrl->cdqs, cdq->cdq_id, cdq, GFP_KERNEL);
+	if (xa_is_err(xa_ret)) {
+		ret = xa_err(xa_ret);
+		goto err_cdq_free;
+	}
+
+	ret = nvme_cdq_fd(cdq, &fdno);
+	if (ret)
+		goto err_cdq_erase;
+
+	*cdq_id = cdq->cdq_id;
+	*cdq_fd = fdno;
+
+	return 0;
+
+err_cdq_erase:
+	xa_erase(&ctrl->cdqs, cdq->cdq_id);
+
+err_cdq_free:
+	cdq_id = NULL;
+	cdq_fd = NULL;
+	nvme_cdq_free(ctrl, cdq);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(nvme_cdq_create);
+
+int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
+{
+	int ret;
+	struct cdq_nvme_queue *cdq;
+	struct nvme_command c = { };
+
+	cdq = xa_erase(&ctrl->cdqs, cdq_id);
+	if (!cdq)
+		return -EINVAL;
+
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = NVME_CDQ_SEL_DELETE_CDQ;
+	c.cdq.delete.cdqid = cdq->cdq_id;
+
+	ret = __nvme_submit_sync_cmd(ctrl->admin_q, &c, NULL, NULL, 0, NVME_QID_ANY, 0);
+	if (ret)
+		return ret;
+
+	nvme_cdq_free(ctrl, cdq);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nvme_cdq_delete);
 
 void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status)

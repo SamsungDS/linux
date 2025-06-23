@@ -425,6 +425,39 @@ static int nvme_user_cdq_mgmt(struct nvme_ctrl *ctrl,
 	return status;
 }
 
+static int nvme_user_cdq_create(struct nvme_ctrl *ctrl,
+				struct nvme_cdq_cmd *cmd,
+				struct nvme_cdq_cmd __user *ucmd)
+{
+	int status;
+	u16 cdq_id = 0;
+	int cdq_fd = 0;
+	struct nvme_command c = {};
+
+	c.cdq.opcode = nvme_admin_cdq;
+	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
+	c.cdq.mos = cpu_to_le16(cmd->mos);
+	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
+	c.cdq.create.cqs = cpu_to_le16(cmd->cqs);
+	/* >>2: size is in dwords */
+	c.cdq.cdqsize = (cmd->entry_nbyte * cmd->entry_nr) >> 2;
+
+	status = nvme_cdq_create(ctrl, &c,
+				 cmd->entry_nr, cmd->entry_nbyte,
+				 cmd->cdqp_offset, cmd->cdqp_mask,
+				 &cdq_id, &cdq_fd);
+	if (status)
+		return status;
+
+	cmd->cdq_id = cdq_id;
+	cmd->read_fd = cdq_fd;
+
+	if (copy_to_user(ucmd, cmd, sizeof(*cmd)))
+		return -EFAULT;
+
+	return status;
+}
+
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
 		bool open_for_write)
@@ -438,6 +471,10 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	case NVME_CDQ_ADM_FLAGS_CREATE:
 	case NVME_CDQ_ADM_FLAGS_DELETE:
 		return nvme_user_cdq_mgmt(ctrl, &cmd, ucmd);
+	case NVME_CDQ_ADM_FLAGS_CREATE_CORE:
+		return nvme_user_cdq_create(ctrl, &cmd, ucmd);
+	case NVME_CDQ_ADM_FLAGS_DELETE_CORE:
+		return nvme_cdq_delete(ctrl, cmd.cdq_id);
 	}
 
 	return -EPERM;
