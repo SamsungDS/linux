@@ -9,6 +9,7 @@
 #include <linux/swap.h>
 #include <linux/migrate.h>
 #include "trace.h"
+#include "internal.h"
 
 #include "../internal.h"
 
@@ -340,14 +341,27 @@ static void iomap_finish_folio_read(struct folio *folio, size_t off,
 		folio_end_read(folio, uptodate);
 }
 
+static u32 __iomap_read_end_io(struct bio *bio, int error)
+{
+	struct folio_iter fi;
+	u32 folio_count = 0;
+
+	bio_for_each_folio_all(fi, bio) {
+		iomap_finish_folio_read(fi.folio, fi.offset, fi.length, error);
+		folio_count++;
+	}
+	bio_put(bio);
+	return folio_count;
+}
+
 static void iomap_read_end_io(struct bio *bio)
 {
-	int error = blk_status_to_errno(bio->bi_status);
-	struct folio_iter fi;
+	__iomap_read_end_io(bio, blk_status_to_errno(bio->bi_status));
+}
 
-	bio_for_each_folio_all(fi, bio)
-		iomap_finish_folio_read(fi.folio, fi.offset, fi.length, error);
-	bio_put(bio);
+u32 iomap_finish_ioend_buffered_read(struct iomap_ioend *ioend)
+{
+	return __iomap_read_end_io(&ioend->io_bio, ioend->io_error);
 }
 
 struct iomap_readpage_ctx {
