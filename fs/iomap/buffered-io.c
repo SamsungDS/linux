@@ -350,18 +350,21 @@ static u32 __iomap_read_end_io(struct bio *bio, int error)
 		iomap_finish_folio_read(fi.folio, fi.offset, fi.length, error);
 		folio_count++;
 	}
-	bio_put(bio);
 	return folio_count;
 }
 
 static void iomap_read_end_io(struct bio *bio)
 {
 	__iomap_read_end_io(bio, blk_status_to_errno(bio->bi_status));
+	bio_put(bio);
 }
 
 u32 iomap_finish_ioend_buffered_read(struct iomap_ioend *ioend)
 {
-	return __iomap_read_end_io(&ioend->io_bio, ioend->io_error);
+	u32 folio_count = __iomap_read_end_io(&ioend->io_bio, ioend->io_error);
+
+	ioend_finish_bio(ioend);
+	return folio_count;
 }
 
 struct iomap_readpage_ctx {
@@ -409,6 +412,14 @@ static struct bio *iomap_read_alloc_bio(const struct iomap_iter *iter,
 static void iomap_read_submit_bio(const struct iomap_iter *iter,
 		struct iomap_readpage_ctx *ctx)
 {
+	if (iter->iomap.flags & IOMAP_F_INTEGRITY) {
+		struct iomap_ioend *ioend;
+
+		ioend = iomap_init_ioend(iter->inode, ctx->bio,
+				ctx->bio_start_pos, 0);
+		fs_bio_integrity_alloc(&ioend->io_bio);
+	}
+
 	if (ctx->ops && ctx->ops->submit_io)
 		ctx->ops->submit_io(iter, ctx->bio, ctx->bio_start_pos);
 	else
@@ -456,6 +467,7 @@ static int iomap_readpage_iter(struct iomap_iter *iter,
 	sector = iomap_sector(iomap, pos);
 	if (!ctx->bio ||
 	    bio_end_sector(ctx->bio) != sector ||
+	    ctx->bio->bi_iter.bi_size > iomap_max_bio_size(iomap) - plen ||
 	    !bio_add_folio(ctx->bio, folio, plen, poff)) {
 		if (ctx->bio)
 			iomap_read_submit_bio(iter, ctx);
@@ -597,12 +609,41 @@ void iomap_readahead(struct readahead_control *rac, const struct iomap_ops *ops,
 }
 EXPORT_SYMBOL_GPL(iomap_readahead);
 
+static int iomap_read_folio_range_integrity(const struct iomap_iter *iter,
+		struct folio *folio, loff_t pos, size_t len)
+{
+	const struct iomap *srcmap = iomap_iter_srcmap(iter);
+	struct iomap_ioend *ioend;
+	struct bio *bio;
+	int error;
+
+	bio = bio_alloc_bioset(srcmap->bdev, 1, REQ_OP_READ, GFP_NOFS,
+			&iomap_ioend_bioset);
+	bio->bi_iter.bi_sector = iomap_sector(srcmap, pos);
+	bio_add_folio_nofail(bio, folio, len, offset_in_folio(folio, pos));
+
+	ioend = iomap_init_ioend(iter->inode, bio, pos, 0);
+	fs_bio_integrity_alloc(&ioend->io_bio);
+	error = submit_bio_wait(bio);
+	if (!error) {
+		WARN_ON_ONCE(!list_empty(&ioend->io_list));
+		error = fs_bio_integrity_verify(bio, ioend->io_sector,
+				ioend->io_size);
+	}
+	fs_bio_integrity_free(bio);
+	bio_put(bio);
+	return error;
+}
+
 static int iomap_read_folio_range(const struct iomap_iter *iter,
 		struct folio *folio, loff_t pos, size_t len)
 {
 	const struct iomap *srcmap = iomap_iter_srcmap(iter);
 	struct bio_vec bvec;
 	struct bio bio;
+
+	if (srcmap->flags & IOMAP_F_INTEGRITY)
+		return iomap_read_folio_range_integrity(iter, folio, pos, len);
 
 	bio_init(&bio, srcmap->bdev, &bvec, 1, REQ_OP_READ);
 	bio.bi_iter.bi_sector = iomap_sector(srcmap, pos);

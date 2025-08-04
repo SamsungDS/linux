@@ -7,6 +7,7 @@
 #include <linux/pagemap.h>
 #include <linux/iomap.h>
 #include <linux/task_io_accounting_ops.h>
+#include <linux/bio-integrity.h>
 #include "internal.h"
 #include "trace.h"
 
@@ -69,6 +70,7 @@ static void iomap_dio_submit_bio(const struct iomap_iter *iter,
 		struct iomap_dio *dio, struct bio *bio, loff_t pos)
 {
 	struct kiocb *iocb = dio->iocb;
+	const struct iomap *iomap = &iter->iomap;
 
 	atomic_inc(&dio->ref);
 
@@ -78,10 +80,20 @@ static void iomap_dio_submit_bio(const struct iomap_iter *iter,
 		WRITE_ONCE(iocb->private, bio);
 	}
 
+	if (iomap->flags & IOMAP_F_INTEGRITY) {
+		if (bio_op(bio) == REQ_OP_WRITE) {
+			fs_bio_integrity_generate(bio);
+		} else {
+			iomap_init_ioend(iter->inode, bio, pos,
+					IOMAP_IOEND_DIRECT);
+			fs_bio_integrity_alloc(bio);
+		}
+	}
+
 	if (dio->dops && dio->dops->submit_io) {
 		dio->dops->submit_io(iter, bio, pos);
 	} else {
-		WARN_ON_ONCE(iter->iomap.flags & IOMAP_F_ANON_WRITE);
+		WARN_ON_ONCE(iomap->flags & IOMAP_F_ANON_WRITE);
 		submit_bio(bio);
 	}
 }
@@ -230,6 +242,9 @@ void iomap_dio_bio_end_io(struct bio *bio)
 	if (atomic_dec_and_test(&dio->ref))
 		iomap_dio_done(dio);
 
+	if (bio_integrity(bio))
+		fs_bio_integrity_free(bio);
+
 	if (should_dirty) {
 		bio_check_pages_dirty(bio);
 	} else {
@@ -266,10 +281,12 @@ u32 iomap_finish_ioend_direct(struct iomap_ioend *ioend)
 	}
 
 	if (should_dirty) {
+		if (bio_integrity(&ioend->io_bio))
+			fs_bio_integrity_free(&ioend->io_bio);
 		bio_check_pages_dirty(&ioend->io_bio);
 	} else {
 		bio_release_pages(&ioend->io_bio, false);
-		bio_put(&ioend->io_bio);
+		ioend_finish_bio(ioend);
 	}
 
 	/*
@@ -434,7 +451,8 @@ static int iomap_dio_bio_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 		bio->bi_private = dio;
 		bio->bi_end_io = iomap_dio_bio_end_io;
 
-		ret = bio_iov_iter_get_pages(bio, dio->submit.iter, UINT_MAX);
+		ret = bio_iov_iter_get_pages(bio, dio->submit.iter,
+				iomap_max_bio_size(iomap));
 		if (unlikely(ret)) {
 			/*
 			 * We have to stop part way through an IO. We must fall
