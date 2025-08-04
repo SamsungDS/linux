@@ -359,6 +359,39 @@ struct iomap_readpage_ctx {
 	const struct iomap_read_folio_ops *ops;
 };
 
+static struct bio_set *iomap_read_bio_set(struct iomap_readpage_ctx *ctx)
+{
+	if (ctx->ops && ctx->ops->bio_set)
+		return ctx->ops->bio_set;
+	return &fs_bio_set;
+}
+
+static struct bio *iomap_read_alloc_bio(const struct iomap_iter *iter,
+		struct iomap_readpage_ctx *ctx, loff_t length)
+{
+	unsigned int nr_vecs = DIV_ROUND_UP(length, PAGE_SIZE);
+	struct block_device *bdev = iter->iomap.bdev;
+	struct bio_set *bio_set = iomap_read_bio_set(ctx);
+	gfp_t gfp = mapping_gfp_constraint(iter->inode->i_mapping, GFP_KERNEL);
+	gfp_t orig_gfp = gfp;
+	struct bio *bio;
+
+	if (ctx->rac) /* same as readahead_gfp_mask */
+		gfp |= __GFP_NORETRY | __GFP_NOWARN;
+
+	bio = bio_alloc_bioset(bdev, bio_max_segs(nr_vecs), REQ_OP_READ, gfp,
+			bio_set);
+
+	/*
+	 * If the bio_alloc fails, try it again for a single page to avoid
+	 * having to deal with partial page reads.  This emulates what
+	 * do_mpage_read_folio does.
+	 */
+	if (!bio)
+		bio = bio_alloc_bioset(bdev, 1, REQ_OP_READ, orig_gfp, bio_set);
+	return bio;
+}
+
 static void iomap_read_submit_bio(const struct iomap_iter *iter,
 		struct iomap_readpage_ctx *ctx)
 {
@@ -410,27 +443,11 @@ static int iomap_readpage_iter(struct iomap_iter *iter,
 	if (!ctx->bio ||
 	    bio_end_sector(ctx->bio) != sector ||
 	    !bio_add_folio(ctx->bio, folio, plen, poff)) {
-		gfp_t gfp = mapping_gfp_constraint(folio->mapping, GFP_KERNEL);
-		gfp_t orig_gfp = gfp;
-		unsigned int nr_vecs = DIV_ROUND_UP(length, PAGE_SIZE);
-
 		if (ctx->bio)
 			iomap_read_submit_bio(iter, ctx);
 
 		ctx->bio_start_pos = pos;
-		if (ctx->rac) /* same as readahead_gfp_mask */
-			gfp |= __GFP_NORETRY | __GFP_NOWARN;
-		ctx->bio = bio_alloc(iomap->bdev, bio_max_segs(nr_vecs),
-				     REQ_OP_READ, gfp);
-		/*
-		 * If the bio_alloc fails, try it again for a single page to
-		 * avoid having to deal with partial page reads.  This emulates
-		 * what do_mpage_read_folio does.
-		 */
-		if (!ctx->bio) {
-			ctx->bio = bio_alloc(iomap->bdev, 1, REQ_OP_READ,
-					     orig_gfp);
-		}
+		ctx->bio = iomap_read_alloc_bio(iter, ctx, length);
 		if (ctx->rac)
 			ctx->bio->bi_opf |= REQ_RAHEAD;
 		ctx->bio->bi_iter.bi_sector = sector;
