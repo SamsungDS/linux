@@ -1185,12 +1185,8 @@ static unsigned int get_contig_folio_len(unsigned int *num_pages,
 
 #define PAGE_PTRS_PER_BVEC     (sizeof(struct bio_vec) / sizeof(struct page *))
 
-/**
- * __bio_iov_iter_get_pages - pin user or kernel pages and add them to a bio
- * @bio: bio to add pages to
- * @iter: iov iterator describing the region to be mapped
- *
- * Extracts pages from *iter and appends them to @bio's bvec array.  The pages
+/*
+ * Extract pages from *iter and appends them to @bio's bvec array.  The pages
  * will have to be cleaned up in the way indicated by the BIO_PAGE_PINNED flag.
  * For a multi-segment *iter, this function only adds pages from the next
  * non-empty segment of the iov iterator.
