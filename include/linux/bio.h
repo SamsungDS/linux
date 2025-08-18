@@ -441,8 +441,10 @@ int submit_bio_wait(struct bio *bio);
 int bdev_rw_virt(struct block_device *bdev, sector_t sector, void *data,
 		size_t len, enum req_op op);
 
-int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter);
-void bio_iov_bvec_set(struct bio *bio, const struct iov_iter *iter);
+int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
+			   unsigned int max_bio_size);
+void bio_iov_bvec_set(struct bio *bio, const struct iov_iter *iter,
+		      unsigned int max_bio_size);
 void __bio_release_pages(struct bio *bio, bool mark_dirty);
 extern void bio_set_pages_dirty(struct bio *bio);
 extern void bio_check_pages_dirty(struct bio *bio);

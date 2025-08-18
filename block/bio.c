@@ -1142,14 +1142,15 @@ void __bio_release_pages(struct bio *bio, bool mark_dirty)
 }
 EXPORT_SYMBOL_GPL(__bio_release_pages);
 
-void bio_iov_bvec_set(struct bio *bio, const struct iov_iter *iter)
+void bio_iov_bvec_set(struct bio *bio, const struct iov_iter *iter,
+		      unsigned int max_bio_size)
 {
 	WARN_ON_ONCE(bio->bi_max_vecs);
 
 	bio->bi_vcnt = iter->nr_segs;
 	bio->bi_io_vec = (struct bio_vec *)iter->bvec;
 	bio->bi_iter.bi_bvec_done = iter->iov_offset;
-	bio->bi_iter.bi_size = iov_iter_count(iter);
+	bio->bi_iter.bi_size = min(iov_iter_count(iter), max_bio_size);
 	bio_set_flag(bio, BIO_CLONED);
 }
 
@@ -1191,7 +1192,8 @@ static unsigned int get_contig_folio_len(unsigned int *num_pages,
  * For a multi-segment *iter, this function only adds pages from the next
  * non-empty segment of the iov iterator.
  */
-static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
+static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
+				    unsigned int max_bio_size)
 {
 	iov_iter_extraction_t extraction_flags = 0;
 	unsigned short nr_pages = bio->bi_max_vecs - bio->bi_vcnt;
@@ -1222,7 +1224,7 @@ static int __bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 	 * the iov data will be picked up in the next bio iteration.
 	 */
 	size = iov_iter_extract_pages(iter, &pages,
-				      UINT_MAX - bio->bi_iter.bi_size,
+				      max_bio_size - bio->bi_iter.bi_size,
 				      nr_pages, extraction_flags, &offset);
 	if (unlikely(size <= 0))
 		return size ? size : -EFAULT;
@@ -1288,6 +1290,7 @@ out:
  * bio_iov_iter_get_pages - add user or kernel pages to a bio
  * @bio: bio to add pages to
  * @iter: iov iterator describing the region to be added
+ * @max_bio_size: maximum final size in bytes that is acceptable for @bio
  *
  * This takes either an iterator pointing to user memory, or one pointing to
  * kernel pages (BVEC iterator). If we're adding user pages, we pin them and
@@ -1304,7 +1307,8 @@ out:
  * MM encounters an error pinning the requested pages, it stops. Error
  * is returned only if 0 pages could be pinned.
  */
-int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
+int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
+			   unsigned int max_bio_size)
 {
 	int ret = 0;
 
@@ -1312,7 +1316,7 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 		return -EIO;
 
 	if (iov_iter_is_bvec(iter)) {
-		bio_iov_bvec_set(bio, iter);
+		bio_iov_bvec_set(bio, iter, max_bio_size);
 		iov_iter_advance(iter, bio->bi_iter.bi_size);
 		return 0;
 	}
@@ -1320,7 +1324,7 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter)
 	if (iov_iter_extract_will_pin(iter))
 		bio_set_flag(bio, BIO_PAGE_PINNED);
 	do {
-		ret = __bio_iov_iter_get_pages(bio, iter);
+		ret = __bio_iov_iter_get_pages(bio, iter, max_bio_size);
 	} while (!ret && iov_iter_count(iter) && !bio_full(bio, 0));
 
 	return bio->bi_vcnt ? 0 : ret;

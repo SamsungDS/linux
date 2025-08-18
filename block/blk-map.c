@@ -282,7 +282,7 @@ static int bio_map_user_iov(struct request *rq, struct iov_iter *iter,
 	bio = blk_rq_map_bio_alloc(rq, nr_vecs, gfp_mask);
 	if (!bio)
 		return -ENOMEM;
-	ret = bio_iov_iter_get_pages(bio, iter);
+	ret = bio_iov_iter_get_pages(bio, iter, UINT_MAX);
 	if (ret)
 		goto out_put;
 	ret = blk_rq_append_bio(rq, bio);
@@ -482,7 +482,7 @@ static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
 	bio = blk_rq_map_bio_alloc(rq, 0, GFP_KERNEL);
 	if (!bio)
 		return -ENOMEM;
-	bio_iov_bvec_set(bio, iter);
+	bio_iov_bvec_set(bio, iter, UINT_MAX);
 
 	ret = blk_rq_append_bio(rq, bio);
 	if (ret)
