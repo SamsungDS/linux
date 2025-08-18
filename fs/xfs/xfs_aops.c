@@ -22,6 +22,7 @@
 #include "xfs_icache.h"
 #include "xfs_zone_alloc.h"
 #include "xfs_rtgroup.h"
+#include <linux/bio-integrity.h>
 
 struct xfs_writepage_ctx {
 	struct iomap_writepage_ctx ctx;
@@ -147,6 +148,17 @@ xfs_end_ioend(
 		goto done;
 	}
 
+	if (bio_op(&ioend->io_bio) == REQ_OP_READ) {
+		WARN_ON_ONCE(!list_empty(&ioend->io_list));
+		if (!bio_integrity(&ioend->io_bio)) {
+			error = -EIO;
+			goto done;
+		}
+		error = fs_bio_integrity_verify(&ioend->io_bio,
+				ioend->io_sector, ioend->io_size);
+		goto done;
+	}
+
 	/*
 	 * Success: commit the COW or unwritten blocks if needed.
 	 */
@@ -163,7 +175,7 @@ xfs_end_ioend(
 	    xfs_ioend_is_append(ioend))
 		error = xfs_setfilesize(ip, offset, size);
 done:
-	if (is_zoned)
+	if (is_zoned && bio_op(&ioend->io_bio) != REQ_OP_READ)
 		xfs_ioend_put_open_zones(ioend);
 	iomap_finish_ioends(ioend, error);
 	memalloc_nofs_restore(nofs_flag);
@@ -737,19 +749,36 @@ xfs_vm_bmap(
 	return iomap_bmap(mapping, block, &xfs_read_iomap_ops);
 }
 
+static void
+xfs_buffered_read_submit_io(
+	const struct iomap_iter	*iter,
+	struct bio		*bio,
+	loff_t			file_offset)
+{
+	if (iter->iomap.flags & IOMAP_F_INTEGRITY)
+		bio->bi_end_io = xfs_end_bio;
+	submit_bio(bio);
+}
+
+static const struct iomap_read_folio_ops xfs_iomap_read_ops = {
+	.bio_set	= &iomap_ioend_bioset,
+	.submit_io	= xfs_buffered_read_submit_io,
+};
+
 STATIC int
 xfs_vm_read_folio(
 	struct file		*unused,
 	struct folio		*folio)
 {
-	return iomap_read_folio(folio, &xfs_read_iomap_ops, NULL);
+	return iomap_read_folio(folio, &xfs_read_iomap_ops,
+			&xfs_iomap_read_ops);
 }
 
 STATIC void
 xfs_vm_readahead(
 	struct readahead_control	*rac)
 {
-	iomap_readahead(rac, &xfs_read_iomap_ops, NULL);
+	iomap_readahead(rac, &xfs_read_iomap_ops, &xfs_iomap_read_ops);
 }
 
 static int
