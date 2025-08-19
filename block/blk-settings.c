@@ -183,6 +183,17 @@ static int blk_validate_integrity_limits(struct queue_limits *lim)
 	if (!bi->interval_exp)
 		bi->interval_exp = ilog2(lim->logical_block_size);
 
+	/*
+	 * The block layer automatically adds integrity data for bios that don't
+	 * already have it.  It allocates a single segment. Limit the I/O size
+	 * so that a single maximum size metadata segment can cover the
+	 * integrity data for the entire I/O.
+	 */
+	lim->max_sectors = min3(lim->max_sectors,
+		BLK_INTEGRITY_MAX_SIZE /
+			bi->pi_tuple_size * lim->logical_block_size,
+		lim->max_segment_size >> SECTOR_SHIFT);
+
 	return 0;
 }
 
