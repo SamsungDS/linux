@@ -200,6 +200,9 @@ EXPORT_SYMBOL_GPL(blk_rq_integrity_map_user);
 bool blk_integrity_merge_rq(struct request_queue *q, struct request *req,
 			    struct request *next)
 {
+	if ((req->cmd_flags & REQ_NOINTEGRITY) !=
+	    (next->cmd_flags & REQ_NOINTEGRITY))
+		return false;
 	if (blk_integrity_rq(req) == 0 && blk_integrity_rq(next) == 0)
 		return true;
 
@@ -224,6 +227,10 @@ bool blk_integrity_merge_bio(struct request_queue *q, struct request *req,
 			     struct bio *bio)
 {
 	int nr_integrity_segs;
+
+	if ((req->cmd_flags & REQ_NOINTEGRITY) !=
+	    (bio->bi_opf & REQ_NOINTEGRITY))
+		return false;
 
 	if (blk_integrity_rq(req) == 0 && bio_integrity(bio) == NULL)
 		return true;

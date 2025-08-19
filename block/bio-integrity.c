@@ -43,7 +43,8 @@ unsigned int __bio_integrity_action(struct bio *bio)
 
 	switch (bio_op(bio)) {
 	case REQ_OP_READ:
-		if (bi->flags & BLK_INTEGRITY_NOVERIFY) {
+		if ((bio->bi_opf & REQ_NOINTEGRITY) ||
+		    (bi->flags & BLK_INTEGRITY_NOVERIFY)) {
 			if (bi_offload_capable(bi))
 				return 0;
 			return BI_ACT_BUFFER;
@@ -61,7 +62,8 @@ unsigned int __bio_integrity_action(struct bio *bio)
 		 * memory to disk for non-integrity metadata where nothing else
 		 * initializes the memory.
 		 */
-		if (bi->flags & BLK_INTEGRITY_NOGENERATE) {
+		if ((bio->bi_opf & REQ_NOINTEGRITY) ||
+		    (bi->flags & BLK_INTEGRITY_NOGENERATE)) {
 			if (bi_offload_capable(bi))
 				return 0;
 			return BI_ACT_BUFFER | BI_ACT_ZERO;
