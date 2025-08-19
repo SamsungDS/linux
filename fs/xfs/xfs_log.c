@@ -1645,7 +1645,8 @@ xlog_write_iclog(
 	 */
 	bio_init(&iclog->ic_bio, log->l_targ->bt_bdev, iclog->ic_bvec,
 		 howmany(count, PAGE_SIZE),
-		 REQ_OP_WRITE | REQ_META | REQ_SYNC | REQ_IDLE);
+		 REQ_OP_WRITE | REQ_META | REQ_SYNC | REQ_IDLE |
+		 REQ_NOINTEGRITY);
 	iclog->ic_bio.bi_iter.bi_sector = log->l_logBBstart + bno;
 	iclog->ic_bio.bi_end_io = xlog_bio_end_io;
 	iclog->ic_bio.bi_private = iclog;

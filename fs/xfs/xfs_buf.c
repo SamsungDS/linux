@@ -1326,7 +1326,14 @@ xfs_buf_bio_op(
 			op |= REQ_RAHEAD;
 	}
 
-	return op | REQ_META;
+	/*
+	 * The XFS self-describing metadata contains a crc32, an either
+	 * explicitly or implicitly encoded disk address and the log sequence
+	 * number for each metadata block.  Generating and verifying integrity
+	 * metadata in the kernel adds no significant value, but adds additional
+	 * memory allocations, context switches and on-the-wire traffic.
+	 */
+	return op | REQ_META | REQ_NOINTEGRITY;
 }
 
 static void

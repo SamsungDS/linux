@@ -138,7 +138,7 @@ xlog_do_io(
 	ASSERT(nbblks > 0);
 
 	error = xfs_rw_bdev(log->l_targ->bt_bdev, log->l_logBBstart + blk_no,
-			BBTOB(nbblks), data, op);
+			BBTOB(nbblks), data, op | REQ_NOINTEGRITY);
 	if (error && !xlog_is_shutdown(log)) {
 		xfs_alert(log->l_mp,
 			  "log recovery %s I/O error at daddr 0x%llx len %d error %d",
