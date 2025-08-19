@@ -7,6 +7,7 @@
  */
 
 #include <linux/blk-integrity.h>
+#include <linux/t10-pi.h>
 #include "blk.h"
 
 struct bio_integrity_alloc {
@@ -15,6 +16,64 @@ struct bio_integrity_alloc {
 };
 
 static mempool_t integrity_buf_pool;
+
+static bool bi_offload_capable(struct blk_integrity *bi)
+{
+	switch (bi->csum_type) {
+	case BLK_INTEGRITY_CSUM_CRC64:
+		return bi->metadata_size == sizeof(struct crc64_pi_tuple);
+	case BLK_INTEGRITY_CSUM_CRC:
+	case BLK_INTEGRITY_CSUM_IP:
+		return bi->metadata_size == sizeof(struct t10_pi_tuple);
+	default:
+		pr_warn_once("%s: unknown integrity checksum type:%d\n",
+			__func__, bi->csum_type);
+		fallthrough;
+	case BLK_INTEGRITY_CSUM_NONE:
+		return false;
+	}
+}
+
+unsigned int __bio_integrity_action(struct bio *bio)
+{
+	struct blk_integrity *bi = blk_get_integrity(bio->bi_bdev->bd_disk);
+
+	if (WARN_ON_ONCE(bio_has_crypt_ctx(bio)))
+		return 0;
+
+	switch (bio_op(bio)) {
+	case REQ_OP_READ:
+		if (bi->flags & BLK_INTEGRITY_NOVERIFY) {
+			if (bi_offload_capable(bi))
+				return 0;
+			return BI_ACT_BUFFER;
+		}
+		return BI_ACT_BUFFER | BI_ACT_CHECK;
+	case REQ_OP_WRITE:
+		/*
+		 * Flush masquerading as write?
+		 */
+		if (!bio_sectors(bio))
+			return 0;
+
+		/*
+		 * Zero the memory allocated to not leak uninitialized kernel
+		 * memory to disk for non-integrity metadata where nothing else
+		 * initializes the memory.
+		 */
+		if (bi->flags & BLK_INTEGRITY_NOGENERATE) {
+			if (bi_offload_capable(bi))
+				return 0;
+			return BI_ACT_BUFFER | BI_ACT_ZERO;
+		}
+
+		if (bi->csum_type == BLK_INTEGRITY_CSUM_NONE)
+			return BI_ACT_BUFFER | BI_ACT_CHECK | BI_ACT_ZERO;
+		return BI_ACT_BUFFER | BI_ACT_CHECK;
+	default:
+		return 0;
+	}
+}
 
 void bio_integrity_alloc_buf(struct bio *bio, bool zero_buffer)
 {

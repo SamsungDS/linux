@@ -3113,6 +3113,7 @@ void blk_mq_submit_bio(struct bio *bio)
 	struct request_queue *q = bdev_get_queue(bio->bi_bdev);
 	struct blk_plug *plug = current->plug;
 	const int is_sync = op_is_sync(bio->bi_opf);
+	unsigned int integrity_action;
 	struct blk_mq_hw_ctx *hctx;
 	unsigned int nr_segs;
 	struct request *rq;
@@ -3165,8 +3166,9 @@ void blk_mq_submit_bio(struct bio *bio)
 	if (!bio)
 		goto queue_exit;
 
-	if (!bio_integrity_prep(bio))
-		goto queue_exit;
+	integrity_action = bio_integrity_action(bio);
+	if (integrity_action)
+		bio_integrity_prep(bio, integrity_action);
 
 	if (blk_mq_attempt_bio_merge(q, bio, nr_segs))
 		goto queue_exit;
