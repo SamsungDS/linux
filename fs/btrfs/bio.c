@@ -5,6 +5,7 @@
  */
 
 #include <linux/bio.h>
+#include <linux/bio-integrity.h>
 #include "bio.h"
 #include "ctree.h"
 #include "volumes.h"
@@ -14,6 +15,7 @@
 #include "zoned.h"
 #include "file-item.h"
 #include "raid-stripe-tree.h"
+#include "data-csum.h"
 
 static struct bio_set btrfs_bioset;
 static struct bio_set btrfs_clone_bioset;
@@ -119,6 +121,15 @@ static void __btrfs_bio_end_io(struct btrfs_bio *bbio)
 
 void btrfs_bio_end_io(struct btrfs_bio *bbio, blk_status_t status)
 {
+	if (bio_integrity(&bbio->bio)) {
+		struct bio *bio = &bbio->bio;
+		struct bio_integrity_payload *bip = bio_integrity(bio);
+		struct bio_vec *bv = &bip->bip_vec[0];
+
+		kfree(bvec_virt(bv));
+		bio->bi_integrity = NULL;
+		bio->bi_opf &= ~REQ_INTEGRITY;
+	}
 	bbio->bio.bi_status = status;
 	if (bbio->bio.bi_pool == &btrfs_clone_bioset) {
 		struct btrfs_bio *orig_bbio = bbio->private;
@@ -300,6 +311,8 @@ static void btrfs_check_read_bio(struct btrfs_bio *bbio, struct btrfs_device *de
 		offset += sectorsize;
 	}
 
+	bbio->bio.bi_status = btrfs_data_csum_verify(&bbio->bio);
+
 	if (bbio->csum != bbio->csum_inline)
 		kfree(bbio->csum);
 
@@ -426,6 +439,8 @@ static void btrfs_clone_write_end_io(struct bio *bio)
 
 static void btrfs_submit_dev_bio(struct btrfs_device *dev, struct bio *bio)
 {
+	struct btrfs_bio *bbio = btrfs_bio(bio);
+
 	if (!dev || !dev->bdev ||
 	    test_bit(BTRFS_DEV_STATE_MISSING, &dev->dev_state) ||
 	    (btrfs_op(bio) == BTRFS_MAP_WRITE &&
@@ -460,6 +475,13 @@ static void btrfs_submit_dev_bio(struct btrfs_device *dev, struct bio *bio)
 	if (dev->fs_devices->collect_fs_stats && bio_op(bio) == REQ_OP_READ && dev->fs_info)
 		percpu_counter_add(&dev->fs_info->stats_read_blocks,
 				   bio->bi_iter.bi_size >> dev->fs_info->sectorsize_bits);
+
+	if (bbio->inode && !(bio->bi_opf & REQ_META)) {
+		if (bio_op(bio) == REQ_OP_WRITE)
+			btrfs_data_csum_generate(bio);
+		if (bio_op(bio) ==  REQ_OP_READ)
+			btrfs_data_csum_alloc(bio);
+	}
 
 	if (bio->bi_opf & REQ_BTRFS_CGROUP_PUNT)
 		blkcg_punt_bio_submit(bio);
