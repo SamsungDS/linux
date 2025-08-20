@@ -60,12 +60,13 @@ struct btrfs_bio {
 		struct {
 			struct btrfs_ordered_extent *ordered;
 			struct btrfs_ordered_sum *sums;
-			u64 orig_physical;
 		};
 
 		/* For metadata reads: parentness verification. */
 		struct btrfs_tree_parent_check parent_check;
 	};
+
+	u64 orig_physical;
 
 	/* End I/O information supplied to btrfs_bio_alloc */
 	btrfs_bio_end_io_t end_io;
