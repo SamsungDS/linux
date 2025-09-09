@@ -1185,7 +1185,7 @@ int bdi_init(struct backing_dev_info *bdi)
 	 * introduced sysfs knob.
 	 * echo N > /sys/class/bdi/<maj>:<min>/nwritebacks
 	 */
-	bdi->nr_wb_ctx = 1;
+	bdi->nr_wb_ctx = num_online_cpus();
 
 	bdi->wb_ctx = wb_ctx_alloc(bdi, bdi->nr_wb_ctx);
 	if (!bdi->wb_ctx)
