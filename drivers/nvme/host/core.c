@@ -1238,7 +1238,7 @@ static bool nvme_cdq_next(struct cdq_nvme_queue *cdq)
 	if (phase_bit != cdq->curr_cdqp) {
 		cdq->curr_entry = (cdq->curr_entry + 1) % cdq->entry_nr;
 		if (unlikely(cdq->curr_entry == 0))
-			cdq->curr_cdqp = ~cdq->curr_cdqp & 0x1;
+			cdq->curr_cdqp = ~cdq->curr_cdqp & cdq->cdqp_mask;
 		return true;
 	}
 	return false;
