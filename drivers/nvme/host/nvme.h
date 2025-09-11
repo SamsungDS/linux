@@ -571,6 +571,7 @@ struct cdq_nvme_queue {
 	dma_addr_t entries_dma_addr;
 	u16 cdq_id;
 	struct file *filep;
+	struct fasync_struct *fasync;
 };
 
 struct nvme_ctrl_ops {
