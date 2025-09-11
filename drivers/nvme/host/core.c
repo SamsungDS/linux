@@ -1337,6 +1337,13 @@ static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
 	return nvme_cdq_traverse(cdq, nbytes, buf);
 }
 
+static int nvme_cdq_fops_fasync(int fd, struct file *filep, int on)
+{
+	struct cdq_nvme_queue *cdq = filep->private_data;
+
+	return fasync_helper(fd, filep, on, &cdq->fasync);
+}
+
 static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
 {
 	struct cdq_nvme_queue *cdq = filep->private_data;
@@ -1349,6 +1356,7 @@ static const struct file_operations cdq_fops = {
 	.open		= nonseekable_open,
 	.read		= nvme_cdq_fops_read,
 	.release	= nvme_cdq_fops_release,
+	.fasync		= nvme_cdq_fops_fasync,
 };
 
 static int nvme_cdq_fd(struct cdq_nvme_queue *cdq, int *fdno)
@@ -1492,6 +1500,13 @@ int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
 	ret = nvme_cdq_del_submit(ctrl, cdq_id);
 	if (ret)
 		return ret;
+
+
+	if (cdq->fasync) {
+		ret = fasync_helper(-1, cdq->filep, 0, &cdq->fasync);
+		if (ret)
+			return ret;
+	}
 
 	nvme_cdq_free(ctrl, cdq);
 
