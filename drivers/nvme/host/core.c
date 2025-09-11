@@ -1268,13 +1268,36 @@ static bool nvme_cdq_next(struct cdq_nvme_queue *cdq)
 	return false;
 }
 
-static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq)
+/*
+ * nvme_cdq_send_feature_id: update the cdq head on the controller side
+ *
+ * @cdq:        Send an update for the head of this CDQ
+ * @tpt_offset  Tail pointer trigger (TPT) offset. Set the TPT in the feature
+ *              id command to tpt_offset entries after the current entry.
+ *              Ignored if zero.
+ */
+static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq, u32 tpt_offset)
 {
 	struct nvme_command c = { };
+	u32 dword11 = cdq->cdq_id & NVME_FEAT_CDQ_ID_MASK;
 
 	c.features.opcode = nvme_admin_set_features;
 	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
-	c.features.dword11 = cdq->cdq_id;
+
+	if (unlikely(tpt_offset != 0)) {
+		/*
+		 * FIXME: There is a small chance that the sent tpt will have
+		 * already been handled when nvme_submit_sync_cmd returns.
+		 * If we find this to be true in the CDQ, we need to send a
+		 * subsequent feature_id to disable the tail pointer trigger.
+		 * section 5.1.25.1.23 nvme base spec.
+		 */
+		dword11 |= NVME_FEAT_CDQ_ETPT_MASK;
+		c.features.dword13 = cpu_to_le32((cdq->curr_entry + tpt_offset)
+						  % cdq->entry_nr);
+	}
+
+	c.features.dword11 = cpu_to_le32(dword11);
 	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
 
 	return nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, NULL, 0);
@@ -1292,6 +1315,7 @@ static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
 				 void *priv_data)
 {
 	int ret;
+	u32 tpt_offset = 0;
 	char __user *to_buf = priv_data;
 	size_t tx_nbyte, target_nbyte = 0;
 	size_t orig_tail_nbyte = (cdq->entry_nr - cdq->curr_entry) * cdq->entry_nbyte;
@@ -1312,7 +1336,12 @@ static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
 			return -EFAULT;
 	}
 
-	ret = nvme_cdq_send_feature_id(cdq);
+	// FIXME: set it to 1 entry after current for now, needs set-able (sysfs or ioctl)
+	/* Set tail pointer trigger only when fd has fasync set*/
+	if (unlikely(cdq->fasync && target_nbyte == 0))
+		tpt_offset = 1;
+
+	ret = nvme_cdq_send_feature_id(cdq, tpt_offset);
 	if (ret < 0)
 		return ret;
 
