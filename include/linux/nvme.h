@@ -1415,6 +1415,11 @@ enum {
 	NVME_FWACT_ACTV		= (2 << 3),
 };
 
+enum {
+	NVME_FEAT_CDQ_ID_MASK = GENMASK(15, 0),
+	NVME_FEAT_CDQ_ETPT_MASK = GENMASK(31,31),
+};
+
 struct nvme_supported_log {
 	__le32	lids[256];
 };
