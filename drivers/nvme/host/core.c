@@ -1519,6 +1519,21 @@ int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
 }
 EXPORT_SYMBOL_GPL(nvme_cdq_delete);
 
+static int nvme_cdq_handle_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
+{
+	u16 cdq_id = event_param & NVME_FEAT_CDQ_ID_MASK;
+	struct cdq_nvme_queue *cdq;
+
+	cdq = xa_load(&ctrl->cdqs, cdq_id);
+	if (xa_is_err(cdq) || !cdq || !cdq->fasync)
+		return false;
+
+	//kill_fasync(&cdq->fasync, SIGIO, POLL_IN);
+	printk("AEN tpevent caught on CDQ id %d\n", cdq->cdq_id);
+
+	return true;
+}
+
 static void nvme_free_cdqs(struct nvme_ctrl *ctrl)
 {
 	struct cdq_nvme_queue *cdq;
@@ -4840,6 +4855,16 @@ static u32 nvme_aer_subtype(u32 result)
 	return (result & 0xff00) >> 8;
 }
 
+static bool nvme_handle_aen_onshot(struct nvme_ctrl *ctrl, u32 result, u32 event_param)
+{
+	u32 aer_subtype = nvme_aer_subtype(result);
+
+	if (aer_subtype == NVME_AER_ONE_SHOT_CDQ_TAIL_PTR)
+		return nvme_cdq_handle_aen_tpevent(ctrl, event_param);
+
+	return false;
+}
+
 static bool nvme_handle_aen_notice(struct nvme_ctrl *ctrl, u32 result)
 {
 	u32 aer_notice_type = nvme_aer_subtype(result);
@@ -4888,6 +4913,7 @@ void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 		volatile union nvme_result *res)
 {
 	u32 result = le32_to_cpu(res->u32);
+	u32 event_param = 0;
 	u32 aer_type = nvme_aer_type(result);
 	u32 aer_subtype = nvme_aer_subtype(result);
 	bool requeue = true;
@@ -4899,6 +4925,11 @@ void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 	switch (aer_type) {
 	case NVME_AER_NOTICE:
 		requeue = nvme_handle_aen_notice(ctrl, result);
+		break;
+	case NVME_AER_ONE_SHOT:
+		/* One-shot events like CDQ tail pointer events. */
+		event_param = le64_to_cpu(res->u64) >> 32;
+		requeue = nvme_handle_aen_onshot(ctrl, result, event_param);
 		break;
 	case NVME_AER_ERROR:
 		/*
