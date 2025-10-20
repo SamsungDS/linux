@@ -1336,11 +1336,6 @@ static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
 			return -EFAULT;
 	}
 
-	// FIXME: set it to 1 entry after current for now, needs set-able (sysfs or ioctl)
-	/* Set tail pointer trigger only when fd has fasync set*/
-	if (unlikely(cdq->fasync && target_nbyte == 0))
-		tpt_offset = 1;
-
 	ret = nvme_cdq_send_feature_id(cdq, tpt_offset);
 	if (ret < 0)
 		return ret;
@@ -1366,13 +1361,6 @@ static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
 	return nvme_cdq_traverse(cdq, nbytes, buf);
 }
 
-static int nvme_cdq_fops_fasync(int fd, struct file *filep, int on)
-{
-	struct cdq_nvme_queue *cdq = filep->private_data;
-
-	return fasync_helper(fd, filep, on, &cdq->fasync);
-}
-
 static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
 {
 	struct cdq_nvme_queue *cdq = filep->private_data;
@@ -1385,7 +1373,6 @@ static const struct file_operations cdq_fops = {
 	.open		= nonseekable_open,
 	.read		= nvme_cdq_fops_read,
 	.release	= nvme_cdq_fops_release,
-	.fasync		= nvme_cdq_fops_fasync,
 };
 
 static int nvme_cdq_fd(struct cdq_nvme_queue *cdq, int *fdno)
@@ -1530,13 +1517,6 @@ int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
 	if (ret)
 		return ret;
 
-
-	if (cdq->fasync) {
-		ret = fasync_helper(-1, cdq->filep, 0, &cdq->fasync);
-		if (ret)
-			return ret;
-	}
-
 	nvme_cdq_free(ctrl, cdq);
 
 	return 0;
@@ -1549,10 +1529,9 @@ static int nvme_cdq_handle_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
 	struct cdq_nvme_queue *cdq;
 
 	cdq = xa_load(&ctrl->cdqs, cdq_id);
-	if (xa_is_err(cdq) || !cdq || !cdq->fasync)
+	if (xa_is_err(cdq))
 		return false;
 
-	//kill_fasync(&cdq->fasync, SIGIO, POLL_IN);
 	printk("AEN tpevent caught on CDQ id %d\n", cdq->cdq_id);
 
 	return true;
