@@ -373,6 +373,21 @@ static int nvme_user_cmd64(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	return status;
 }
 
+static int nvme_user_cdq_tpt(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
+			     struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
+			     bool open_for_write)
+{
+	struct nvme_cdq_tpt tpt = {};
+
+	if (copy_from_user(&tpt, ucmd, sizeof(tpt)))
+		return -EFAULT;
+
+	if (tpt.tpt_offset == 0)
+		return -EFAULT;
+
+	return nvme_cdq_set_tpt(ctrl, tpt.cdq_id, tpt.fd, tpt.tpt_offset);
+}
+
 static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 		struct nvme_cdq_cmd __user *ucmd, unsigned int flags,
 		bool open_for_write)
@@ -589,6 +604,8 @@ static int nvme_ctrl_ioctl(struct nvme_ctrl *ctrl, unsigned int cmd,
 		return nvme_user_cmd64(ctrl, NULL, argp, 0, open_for_write);
 	case NVME_IOCTL_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
+	case NVME_IOCTL_CDQ_TPT:
+		return nvme_user_cdq_tpt(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return sed_ioctl(ctrl->opal_dev, cmd, argp);
 	}
@@ -909,6 +926,8 @@ long nvme_dev_ioctl(struct file *file, unsigned int cmd,
 		return 0;
 	case NVME_IOCTL_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
+	case NVME_IOCTL_CDQ_TPT:
+		return nvme_user_cdq_tpt(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return -ENOTTY;
 	}
