@@ -582,7 +582,7 @@ out_free_req:
 static bool is_ctrl_ioctl(unsigned int cmd)
 {
 	if (cmd == NVME_IOCTL_ADMIN_CMD || cmd == NVME_IOCTL_ADMIN64_CMD ||
-	    cmd == NVME_IOCTL_ADMIN_CDQ)
+	    cmd == NVME_IOCTL_CDQ || cmd == NVME_IOCTL_CDQ_TPT)
 		return true;
 	if (is_sed_ioctl(cmd))
 		return true;
@@ -597,7 +597,7 @@ static int nvme_ctrl_ioctl(struct nvme_ctrl *ctrl, unsigned int cmd,
 		return nvme_user_cmd(ctrl, NULL, argp, 0, open_for_write);
 	case NVME_IOCTL_ADMIN64_CMD:
 		return nvme_user_cmd64(ctrl, NULL, argp, 0, open_for_write);
-	case NVME_IOCTL_ADMIN_CDQ:
+	case NVME_IOCTL_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return sed_ioctl(ctrl->opal_dev, cmd, argp);
@@ -917,7 +917,7 @@ long nvme_dev_ioctl(struct file *file, unsigned int cmd,
 			return -EACCES;
 		nvme_queue_scan(ctrl);
 		return 0;
-	case NVME_IOCTL_ADMIN_CDQ:
+	case NVME_IOCTL_CDQ:
 		return nvme_user_cdq(ctrl, NULL, argp, 0, open_for_write);
 	default:
 		return -ENOTTY;
