@@ -1368,11 +1368,26 @@ static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
 	return nvme_cdq_delete(cdq->ctrl, cdq->cdq_id);
 }
 
+static int nvme_cdq_mmap (struct file *filep, struct vm_area_struct *vma)
+{
+	struct cdq_nvme_queue *cdq = filep->private_data;
+
+	if (dma_mmap_coherent(cdq->ctrl->dev, vma, cdq->entries,
+			      cdq->entries_dma_addr,
+			      cdq->entry_nr * cdq->entry_nbyte)) {
+	   return -ENOMEM;
+	}
+	vm_flags_set(vma, VM_DONTEXPAND);
+
+	return 0;
+}
+
 static const struct file_operations cdq_fops = {
 	.owner		= THIS_MODULE,
 	.open		= nonseekable_open,
 	.read		= nvme_cdq_fops_read,
 	.release	= nvme_cdq_fops_release,
+	.mmap		= nvme_cdq_mmap,
 };
 
 static int nvme_cdq_fd(struct cdq_nvme_queue *cdq, int *fdno)
