@@ -93,20 +93,32 @@ struct nvme_uring_cmd {
 };
 
 struct nvme_cdq_cmd {
-	__u32	entry_nr;
-	__u32	entry_nbyte;
-	__u16	cdq_id;
+	/*
+	 * CDQ size in bytes:
+	 * (Number of entries) * (entry size in bytes)
+	 */
+	__u32	size_nbyte;
+
+	/*
+	 * Tail Pointer Trigger eventfd File Descriptor
+	 * Passed when creating the cdq.
+	 * -1 means that there is no FD and AER should not be forwarded.
+	 */
+	int	tpt_fd;
+
+	/*
+	 * Returned by controller; CDQ ID
+	 */
+	__u16	id;
+
+	/*
+	 * Returned by kernel; CDQ File Descriptor
+	 * Needed for mmapping memory
+	 */
+	int	fd;
+
 	__u16	cqs;
 	__u16	mos;
-	__u32	cdqp_offset;
-	__u32	cdqp_mask;
-	int	read_fd;
-};
-
-struct nvme_cdq_tpt {
-	__u16	cdq_id;
-	__u32	tpt_offset;
-	int	fd;
 };
 
 #define nvme_admin_cmd nvme_passthru_cmd
@@ -122,7 +134,6 @@ struct nvme_cdq_tpt {
 #define NVME_IOCTL_IO64_CMD	_IOWR('N', 0x48, struct nvme_passthru_cmd64)
 #define NVME_IOCTL_IO64_CMD_VEC	_IOWR('N', 0x49, struct nvme_passthru_cmd64)
 #define NVME_IOCTL_CDQ		_IOR('N', 0x50, struct nvme_cdq_cmd)
-#define NVME_IOCTL_CDQ_TPT	_IOR('N', 0x51, struct nvme_cdq_tpt)
 
 /* io_uring async commands: */
 #define NVME_URING_CMD_IO	_IOWR('N', 0x80, struct nvme_uring_cmd)
