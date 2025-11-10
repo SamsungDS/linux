@@ -1253,114 +1253,6 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
-/* Returns true if curr_entry forwarded by 1 */
-static bool nvme_cdq_next(struct cdq_nvme_queue *cdq)
-{
-	void *curr_entry = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
-	u8 phase_bit = (*(u8 *)(curr_entry + cdq->cdqp_offset) & cdq->cdqp_mask);
-	/* if different, then its new! */
-	if (phase_bit != cdq->curr_cdqp) {
-		cdq->curr_entry = (cdq->curr_entry + 1) % cdq->entry_nr;
-		if (unlikely(cdq->curr_entry == 0))
-			cdq->curr_cdqp = ~cdq->curr_cdqp & cdq->cdqp_mask;
-		return true;
-	}
-	return false;
-}
-
-/*
- * nvme_cdq_send_feature_id: update the cdq head on the controller side
- *
- * @cdq:        Send an update for the head of this CDQ
- * @tpt_offset  Tail pointer trigger (TPT) offset. Set the TPT in the feature
- *              id command to tpt_offset entries after the current entry.
- *              Ignored if zero.
- */
-static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq, u32 tpt_offset)
-{
-	struct nvme_command c = { };
-	u32 dword11 = cdq->cdq_id & NVME_FEAT_CDQ_ID_MASK;
-
-	c.features.opcode = nvme_admin_set_features;
-	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
-
-	if (unlikely(tpt_offset != 0)) {
-		/*
-		 * FIXME: There is a small chance that the sent tpt will have
-		 * already been handled when nvme_submit_sync_cmd returns.
-		 * If we find this to be true in the CDQ, we need to send a
-		 * subsequent feature_id to disable the tail pointer trigger.
-		 * section 5.1.25.1.23 nvme base spec.
-		 */
-		dword11 |= NVME_FEAT_CDQ_ETPT_MASK;
-		c.features.dword13 = cpu_to_le32((cdq->curr_entry + tpt_offset)
-						  % cdq->entry_nr);
-	}
-
-	c.features.dword11 = cpu_to_le32(dword11);
-	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
-
-	return nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, NULL, 0);
-}
-
-/*
- * Traverse the CDQ until max entries are reached or until the entry phase
- * bit is the same as the current phase bit.
- *
- * cdq : Controller Data Queue
- * count_nbyte : Count bytes to "traverse" before sending feature id
- * priv_data : argument for consume
- */
-static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
-				 void *priv_data)
-{
-	int ret;
-	u32 tpt_offset = 0;
-	char __user *to_buf = priv_data;
-	size_t tx_nbyte, target_nbyte = 0;
-	size_t orig_tail_nbyte = (cdq->entry_nr - cdq->curr_entry) * cdq->entry_nbyte;
-	void *from_buf = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
-
-	while (target_nbyte < count_nbyte && nvme_cdq_next(cdq))
-		target_nbyte += cdq->entry_nbyte;
-	tx_nbyte = min(orig_tail_nbyte, target_nbyte);
-
-	if (copy_to_user(to_buf, from_buf, tx_nbyte))
-		return -EFAULT;
-
-	if (tx_nbyte < target_nbyte) {
-		/* Copy the entries that have been wrapped around */
-		from_buf = cdq->entries;
-		to_buf += tx_nbyte;
-		if (copy_to_user(to_buf, from_buf, target_nbyte - tx_nbyte))
-			return -EFAULT;
-	}
-
-	ret = nvme_cdq_send_feature_id(cdq, tpt_offset);
-	if (ret < 0)
-		return ret;
-
-	return target_nbyte;
-}
-
-static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
-				  size_t count, loff_t *ppos)
-{
-	struct cdq_nvme_queue *cdq = filep->private_data;
-	size_t nbytes = round_down(count, cdq->entry_nbyte);
-
-	if (*ppos)
-		return -ESPIPE;
-
-	if (count < cdq->entry_nbyte)
-		return -EINVAL;
-
-	if (nbytes > (cdq->entry_nr * cdq->entry_nbyte))
-		return -EINVAL;
-
-	return nvme_cdq_traverse(cdq, nbytes, buf);
-}
-
 static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
 {
 	struct cdq_nvme_queue *cdq = filep->private_data;
@@ -1374,7 +1266,7 @@ static int nvme_cdq_mmap (struct file *filep, struct vm_area_struct *vma)
 
 	if (dma_mmap_coherent(cdq->ctrl->dev, vma, cdq->entries,
 			      cdq->entries_dma_addr,
-			      cdq->entry_nr * cdq->entry_nbyte)) {
+			      cdq->size_nbyte)) {
 	   return -ENOMEM;
 	}
 	vm_flags_set(vma, VM_DONTEXPAND);
@@ -1385,7 +1277,6 @@ static int nvme_cdq_mmap (struct file *filep, struct vm_area_struct *vma)
 static const struct file_operations cdq_fops = {
 	.owner		= THIS_MODULE,
 	.open		= nonseekable_open,
-	.read		= nvme_cdq_fops_read,
 	.release	= nvme_cdq_fops_release,
 	.mmap		= nvme_cdq_mmap,
 };
@@ -1425,15 +1316,14 @@ out:
 }
 
 static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
-			  u32 entry_nr, u32 entry_nbyte)
+			  u32 size_nbyte)
 {
 	struct cdq_nvme_queue *ret_cdq = kzalloc(sizeof(*ret_cdq), GFP_KERNEL);
 
 	if (!ret_cdq)
 		return -ENOMEM;
 
-	ret_cdq->entries = dma_alloc_coherent(ctrl->dev,
-					      entry_nr * entry_nbyte,
+	ret_cdq->entries = dma_alloc_coherent(ctrl->dev, size_nbyte,
 					      &ret_cdq->entries_dma_addr,
 					      GFP_KERNEL);
 	if (!ret_cdq->entries) {
@@ -1448,8 +1338,8 @@ static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
 
 static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
-	dma_free_coherent(ctrl->dev, cdq->entry_nr * cdq->entry_nbyte,
-			  cdq->entries, cdq->entries_dma_addr);
+	dma_free_coherent(ctrl->dev, cdq->size_nbyte, cdq->entries,
+			  cdq->entries_dma_addr);
 	if (cdq->tpt_efd_ctx)
 		eventfd_ctx_put(cdq->tpt_efd_ctx);
 	kfree(cdq);
@@ -1467,41 +1357,29 @@ static int nvme_cdq_del_submit(struct nvme_ctrl *ctrl, const u16 cdq_id)
 }
 
 
-int nvme_cdq_set_tpt(struct nvme_ctrl *ctrl, const u16 cdq_id,
-		     const int event_fd, const u32 tpt_offset)
+static int nvme_cdq_set_tpt(struct cdq_nvme_queue *cdq, const int tpt_fd)
 {
-	struct cdq_nvme_queue *cdq;
-
-	cdq = xa_load(&ctrl->cdqs, cdq_id);
-	if (xa_is_err(cdq))
-		return -EINVAL;
-
-	if (cdq->entry_nr < tpt_offset)
-		return -EINVAL;
-
-	if (event_fd < 0)
+	if (tpt_fd < 0)
 		return -EINVAL;
 
 	if (cdq->tpt_efd_ctx)
 		eventfd_ctx_put(cdq->tpt_efd_ctx);
 
-	cdq->tpt_efd_ctx = eventfd_ctx_fdget(event_fd);
+	cdq->tpt_efd_ctx = eventfd_ctx_fdget(tpt_fd);
 	if (IS_ERR(cdq->tpt_efd_ctx))
 		return -EINVAL;
 
-	return nvme_cdq_send_feature_id(cdq, tpt_offset);
+	return 0;
 }
 
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
-		    const u32 entry_nr, const u32 entry_nbyte,
-		    uint cdqp_offset, uint cdqp_mask,
-		    u16 *cdq_id, int *cdq_fd)
+		    int tpt_fd, const u32 size_nbyte, u16 *cdq_id, int *cdq_fd)
 {
 	int ret, fdno;
 	struct cdq_nvme_queue *cdq, *xa_ret;
 	union nvme_result result = { };
 
-	ret = nvme_cdq_alloc(ctrl, &cdq, entry_nr, entry_nbyte);
+	ret = nvme_cdq_alloc(ctrl, &cdq, size_nbyte);
 	if (ret)
 		return ret;
 	c->cdq.prp1 = cdq->entries_dma_addr;
@@ -1511,11 +1389,8 @@ int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
 		goto err_cdq_free;
 
 	cdq->cdq_id = le16_to_cpu(result.u16);
-	cdq->entry_nbyte = entry_nbyte;
-	cdq->entry_nr = entry_nr;
 	cdq->ctrl = ctrl;
-	cdq->cdqp_offset = cdqp_offset;
-	cdq->cdqp_mask = cdqp_mask;
+	cdq->size_nbyte = size_nbyte;
 
 	xa_ret = xa_store(&ctrl->cdqs, cdq->cdq_id, cdq, GFP_KERNEL);
 	if (xa_is_err(xa_ret)) {
@@ -1526,11 +1401,21 @@ int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
 	ret = nvme_cdq_fd(cdq, &fdno);
 	if (ret)
 		goto err_cdq_erase;
+	
+	if (tpt_fd > 0){
+		ret = nvme_cdq_set_tpt(cdq, tpt_fd);
+		if (ret)
+			goto err_cdq_fput;
+	}
 
 	*cdq_id = cdq->cdq_id;
 	*cdq_fd = fdno;
 
 	return 0;
+
+err_cdq_fput:
+	put_unused_fd(fdno);
+	fput(cdq->filep);
 
 err_cdq_erase:
 	xa_erase(&ctrl->cdqs, cdq->cdq_id);
