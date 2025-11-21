@@ -559,14 +559,18 @@ static inline bool nvme_ns_has_pi(struct nvme_ns_head *head)
 	return head->pi_type && head->ms == head->pi_size;
 }
 
+#define MAX_NR_CDQ_PRPS		20
 struct cdq_nvme_queue {
 	struct nvme_ctrl *ctrl;
-	void *entries;
 	__u32	size_nbyte;
-	dma_addr_t entries_dma_addr;
 	u16 cdq_id;
-	struct file *filep;
 	struct eventfd_ctx *tpt_efd_ctx;
+	struct sg_table sgt;
+	struct page **pages;
+	void *prp_lists[MAX_NR_CDQ_PRPS];
+	dma_addr_t prp_lists_dma[MAX_NR_CDQ_PRPS];
+	u32 nr_prp_lists; /*number of PRP lists*/
+
 };
 
 struct nvme_ctrl_ops {
@@ -1220,7 +1224,8 @@ int nvme_execute_rq(struct request *rq, bool at_head);
 void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status);
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
-		    int tpt_fd, const u32 size_nbyte, u16 *cdq_id, int *cdq_fd);
+		    int tpt_fd, unsigned long uaddr, const u32 size_nbyte,
+		    u16 *cdq_id);
 int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id);
 struct nvme_ctrl *nvme_ctrl_from_file(struct file *file);
 struct nvme_ns *nvme_find_get_ns(struct nvme_ctrl *ctrl, unsigned nsid);
