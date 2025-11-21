@@ -379,7 +379,6 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 {
 	int status;
 	u16 cdq_id = 0;
-	int cdq_fd = 0;
 	struct nvme_command c = {};
 	struct nvme_cdq_cmd cmd = {};
 
@@ -389,23 +388,27 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (cmd.size_nbyte == 0)
 		return -EINVAL;
 
+	/* 21 = 12 (PAGE_SHIFT) + 9 (PAGE_SHIFT / sizeof(u64)) */
+	if (cmd.size_nbyte > MAX_NR_CDQ_PRPS << 21 )
+		return -EINVAL;
+
 	c.cdq.opcode = nvme_admin_cdq;
 	c.cdq.sel = NVME_CDQ_SEL_CREATE_CDQ;
 	c.cdq.mos = cpu_to_le16(cmd.mos);
-	c.cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
 	c.cdq.create.cqs = cpu_to_le16(cmd.cqs);
 	/* >>2: size is in dwords */
 	c.cdq.cdqsize = cmd.size_nbyte >> 2;
 
-	status = nvme_cdq_create(ctrl, &c, cmd.tpt_fd, cmd.size_nbyte, &cdq_id, &cdq_fd);
+	status = nvme_cdq_create(ctrl, &c, cmd.tpt_fd, cmd.entries, cmd.size_nbyte, &cdq_id);
 	if (status)
 		return status;
 
 	cmd.id = cdq_id;
-	cmd.fd = cdq_fd;
 
-	if (copy_to_user(ucmd, &cmd, sizeof(cmd)))
-		return -EFAULT;
+	if (copy_to_user(ucmd, &cmd, sizeof(cmd))) {
+		status = nvme_cdq_delete(ctrl, cdq_id);
+		return status ? status : -EFAULT;
+	}
 
 	return status;
 }

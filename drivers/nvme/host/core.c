@@ -23,7 +23,6 @@
 #include <linux/pm_qos.h>
 #include <linux/ratelimit.h>
 #include <linux/unaligned.h>
-#include <linux/anon_inodes.h>
 
 #include "nvme.h"
 #include "fabrics.h"
@@ -1253,93 +1252,123 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
-static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
+static int nvme_cdq_alloc_from_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
+				   u32 size_nbytes, unsigned long uaddr)
 {
-	struct cdq_nvme_queue *cdq = filep->private_data;
+	int ret = -ENOMEM;
+	struct page **pages;
+	struct cdq_nvme_queue *ret_cdq;
+	unsigned long nr_pages = (size_nbytes + PAGE_SIZE -1) >> PAGE_SHIFT;
 
-	return nvme_cdq_delete(cdq->ctrl, cdq->cdq_id);
-}
-
-static int nvme_cdq_mmap (struct file *filep, struct vm_area_struct *vma)
-{
-	struct cdq_nvme_queue *cdq = filep->private_data;
-
-	if (dma_mmap_coherent(cdq->ctrl->dev, vma, cdq->entries,
-			      cdq->entries_dma_addr,
-			      cdq->size_nbyte)) {
-	   return -ENOMEM;
-	}
-	vm_flags_set(vma, VM_DONTEXPAND);
-
-	return 0;
-}
-
-static const struct file_operations cdq_fops = {
-	.owner		= THIS_MODULE,
-	.open		= nonseekable_open,
-	.release	= nvme_cdq_fops_release,
-	.mmap		= nvme_cdq_mmap,
-};
-
-static int nvme_cdq_fd(struct cdq_nvme_queue *cdq, int *fdno)
-{
-	int ret = 0;
-	struct file *filep;
-
-	*fdno = -1;
-
-	if (cdq->filep)
+	if (!PAGE_ALIGN(uaddr))
 		return -EINVAL;
 
-	filep = anon_inode_getfile("[cdq-readfd]", &cdq_fops, cdq, O_RDWR);
-	if (IS_ERR(filep)) {
-		ret = PTR_ERR(filep);
-		goto out;
+	ret_cdq = kzalloc(sizeof(*ret_cdq), GFP_KERNEL);
+	if (!ret_cdq)
+		return -ENOMEM;
+
+	pages = kvmalloc_array(nr_pages, sizeof(struct page*), GFP_KERNEL);
+	if (!pages)
+		goto free_cdq;
+
+	ret = pin_user_pages(uaddr, nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
+	if (ret != nr_pages) {
+		if (ret > 0)
+			unpin_user_pages(pages, ret);
+		ret = -EFAULT;
+		goto free_pages;
 	}
 
-	*fdno = get_unused_fd_flags(O_CLOEXEC | O_RDONLY | O_DIRECT);
-	if (*fdno < 0) {
-		ret = *fdno;
-		goto out_fput;
-	}
+	ret = sg_alloc_table_from_pages_segment( &ret_cdq->sgt, pages, nr_pages,
+					0, size_nbytes, PAGE_SIZE, GFP_KERNEL);
+	if (ret)
+		goto unpin_pages;
 
-	fd_install(*fdno, filep);
-	cdq->filep = filep;
-
-	return 0;
-
-out_fput:
-	put_unused_fd(*fdno);
-	fput(filep);
-out:
-	return ret;
-}
-
-static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
-			  u32 size_nbyte)
-{
-	struct cdq_nvme_queue *ret_cdq = kzalloc(sizeof(*ret_cdq), GFP_KERNEL);
+	ret = dma_map_sgtable(ctrl->dev, &ret_cdq->sgt, DMA_BIDIRECTIONAL, 0);
+	if (ret)
+		goto unpin_pages;
 
 	if (!ret_cdq)
 		return -ENOMEM;
 
-	ret_cdq->entries = dma_alloc_coherent(ctrl->dev, size_nbyte,
-					      &ret_cdq->entries_dma_addr,
-					      GFP_KERNEL);
-	if (!ret_cdq->entries) {
-		kfree(ret_cdq);
-		return -ENOMEM;
-	}
-
+	ret_cdq->pages = pages;
 	*cdq = ret_cdq;
 
 	return 0;
+
+unpin_pages:
+	unpin_user_pages(pages, nr_pages);
+
+free_pages:
+	kvfree(pages);
+
+free_cdq:
+	kfree(ret_cdq);
+
+	return ret;
+}
+
+static void nvme_cdq_free_prp_lists(struct nvme_ctrl *ctrl,
+				    struct cdq_nvme_queue *cdq)
+{
+	for (int i = 0; i < cdq->nr_prp_lists; ++i) {
+		if (cdq->prp_lists[i])
+			dma_free_coherent(ctrl->dev, PAGE_SIZE,
+					  cdq->prp_lists[i],
+					  cdq->prp_lists_dma[i]);
+	}
+	kvfree(cdq->pages);
+}
+
+static int nvme_cdq_setup_prps(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq,
+			       struct nvme_command *c)
+{
+	unsigned int i, prp_list_idx = 0;
+	struct scatterlist *sg;
+	u64 *prp_list, *prp_list_tmp;
+	dma_addr_t prp_list_tmp_dma;
+
+	c->cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_DISCONT);
+
+	prp_list = dma_alloc_coherent(ctrl->dev, PAGE_SIZE, &prp_list_tmp_dma, GFP_KERNEL);
+	if (!prp_list)
+		return ENOMEM;
+
+	cdq->prp_lists[0] = prp_list;
+	cdq->prp_lists_dma[0] = prp_list_tmp_dma;
+	c->cdq.prp1 = prp_list_tmp_dma;
+	cdq->nr_prp_lists = 1;
+
+	for_each_sgtable_sg(&cdq->sgt, sg, i) {
+		if (prp_list_idx == PAGE_SIZE >> 3) {
+			if (cdq->nr_prp_lists == MAX_NR_CDQ_PRPS)
+				goto prps_err;
+
+			prp_list_tmp = dma_alloc_coherent(ctrl->dev,
+					PAGE_SIZE, &prp_list_tmp_dma, GFP_KERNEL);
+			if (!prp_list_tmp)
+				goto prps_err;
+
+			cdq->prp_lists_dma[cdq->nr_prp_lists] = prp_list_tmp_dma;
+			cdq->prp_lists[cdq->nr_prp_lists++] = prp_list_tmp;
+
+			prp_list = prp_list_tmp;
+			prp_list_idx = 0;
+		}
+		prp_list[prp_list_idx++] = sg_dma_address(sg);
+	}
+
+	return 0;
+
+prps_err:
+	nvme_cdq_free_prp_lists(ctrl, cdq);
+
+	return -EFAULT;
 }
 
 static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
-	dma_free_coherent(ctrl->dev, cdq->size_nbyte, cdq->entries,
-			  cdq->entries_dma_addr);
+	nvme_cdq_free_prp_lists(ctrl, cdq);
 	if (cdq->tpt_efd_ctx)
 		eventfd_ctx_put(cdq->tpt_efd_ctx);
 	kfree(cdq);
@@ -1373,16 +1402,20 @@ static int nvme_cdq_set_tpt(struct cdq_nvme_queue *cdq, const int tpt_fd)
 }
 
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
-		    int tpt_fd, const u32 size_nbyte, u16 *cdq_id, int *cdq_fd)
+		    int tpt_fd, unsigned long uaddr, const u32 size_nbyte,
+		    u16 *cdq_id)
 {
-	int ret, fdno;
+	int ret;
 	struct cdq_nvme_queue *cdq, *xa_ret;
 	union nvme_result result = { };
 
-	ret = nvme_cdq_alloc(ctrl, &cdq, size_nbyte);
+	ret = nvme_cdq_alloc_from_usr(ctrl, &cdq, size_nbyte, uaddr);
 	if (ret)
 		return ret;
-	c->cdq.prp1 = cdq->entries_dma_addr;
+
+	ret = nvme_cdq_setup_prps(ctrl, cdq, c);
+	if (ret)
+		goto err_cdq_free;
 
 	ret = __nvme_submit_sync_cmd(ctrl->admin_q, c, &result, NULL, 0, NVME_QID_ANY, 0);
 	if (ret)
@@ -1398,24 +1431,15 @@ int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
 		goto err_snd_del;
 	}
 
-	ret = nvme_cdq_fd(cdq, &fdno);
-	if (ret)
-		goto err_cdq_erase;
-	
 	if (tpt_fd > 0){
 		ret = nvme_cdq_set_tpt(cdq, tpt_fd);
 		if (ret)
-			goto err_cdq_fput;
+			goto err_cdq_erase;
 	}
 
 	*cdq_id = cdq->cdq_id;
-	*cdq_fd = fdno;
 
 	return 0;
-
-err_cdq_fput:
-	put_unused_fd(fdno);
-	fput(cdq->filep);
 
 err_cdq_erase:
 	xa_erase(&ctrl->cdqs, cdq->cdq_id);
@@ -1425,7 +1449,6 @@ err_snd_del:
 
 err_cdq_free:
 	cdq_id = NULL;
-	cdq_fd = NULL;
 	nvme_cdq_free(ctrl, cdq);
 
 	return ret;
@@ -4982,7 +5005,7 @@ static u32 nvme_aer_subtype(u32 result)
 	return (result & 0xff00) >> 8;
 }
 
-static bool nvme_handle_aen_onshot(struct nvme_ctrl *ctrl, u32 result, u32 event_param)
+static bool nvme_handle_aen_oneshot(struct nvme_ctrl *ctrl, u32 result, u32 event_param)
 {
 	u32 aer_subtype = nvme_aer_subtype(result);
 
@@ -5056,7 +5079,7 @@ void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 	case NVME_AER_ONE_SHOT:
 		/* One-shot events like CDQ tail pointer events. */
 		event_param = le64_to_cpu(res->u64) >> 32;
-		requeue = nvme_handle_aen_onshot(ctrl, result, event_param);
+		requeue = nvme_handle_aen_oneshot(ctrl, result, event_param);
 		break;
 	case NVME_AER_ERROR:
 		/*

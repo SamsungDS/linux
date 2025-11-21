@@ -1608,7 +1608,7 @@ struct nvme_cdq {
 	__u16			command_id;
 	__u32			rsvd1[5];
 	__le64			prp1;
-	__u32			rsvd8[2];
+	__le32			rsvd8[2];
 #define NVME_CDQ_SEL_CREATE_CDQ	0x0
 #define NVME_CDQ_SEL_DELETE_CDQ	0x1
 	__u8			sel;
@@ -1616,7 +1616,8 @@ struct nvme_cdq {
 	__le16			mos;
 	union {
 		struct {
-#define NVME_CDQ_CFG_PC_CONT	(1 << 0)
+#define NVME_CDQ_CFG_PC_CONT	0x1
+#define NVME_CDQ_CFG_PC_DISCONT	0x0
 			__le16	cdq_flags;
 			__le16	cqs;
 		} create;

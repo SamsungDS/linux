@@ -100,6 +100,11 @@ struct nvme_cdq_cmd {
 	__u32	size_nbyte;
 
 	/*
+	 * Virtual mem (returned by mmap). Start of the entries buf in virtual mem.
+	 */
+	__u64	entries;
+
+	/*
 	 * Tail Pointer Trigger eventfd File Descriptor
 	 * Passed when creating the cdq.
 	 * -1 means that there is no FD and AER should not be forwarded.
@@ -110,12 +115,6 @@ struct nvme_cdq_cmd {
 	 * Returned by controller; CDQ ID
 	 */
 	__u16	id;
-
-	/*
-	 * Returned by kernel; CDQ File Descriptor
-	 * Needed for mmapping memory
-	 */
-	int	fd;
 
 	__u16	cqs;
 	__u16	mos;
