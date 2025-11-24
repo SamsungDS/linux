@@ -184,6 +184,7 @@ void blk_mq_dma_map_move_notify(struct blk_mq_dma_token *token)
 {
 	blk_mq_dma_map_remove(token);
 }
+EXPORT_SYMBOL_GPL(blk_mq_dma_map_move_notify);
 
 static void blk_mq_release_dma_mapping(struct dma_token *base_token)
 {
