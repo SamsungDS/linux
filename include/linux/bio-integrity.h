@@ -150,5 +150,7 @@ void fs_bio_integrity_free(struct bio *bio);
 void fs_bio_integrity_generate(struct bio *bio);
 int fs_bio_integrity_verify(struct bio *bio, sector_t sector,
 		unsigned int size);
+int __fs_data_csum_verify(struct bio *bio, u64 i_ino, u64 file_offset);
+void __fs_data_csum_generate(struct bio *bio);
 
 #endif /* _LINUX_BIO_INTEGRITY_H */

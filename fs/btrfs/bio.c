@@ -5,6 +5,8 @@
  */
 
 #include <linux/bio.h>
+#include <linux/bio-integrity.h>
+#include <linux/blk-integrity.h>
 #include "bio.h"
 #include "ctree.h"
 #include "volumes.h"
@@ -275,6 +277,25 @@ static void btrfs_check_read_bio(struct btrfs_bio *bbio, struct btrfs_device *de
 	/* Clear the I/O error. A failed repair will reset it. */
 	bbio->bio.bi_status = BLK_STS_OK;
 
+	/*
+	 * XXX: orig_physical only works when not using some form of RAID.
+	 */
+	if (bio_integrity(&bbio->bio)) {
+		struct bio *bio = &bbio->bio;
+		struct blk_integrity *bi = blk_get_integrity(bio->bi_bdev->bd_disk);
+
+		if (!bi->csum_type) {
+			bbio->bio.bi_status = __fs_data_csum_verify(bio,
+					btrfs_ino(bbio->inode), bbio->file_offset);
+		} else {
+			bbio->bio.bi_status = errno_to_blk_status(
+					fs_bio_integrity_verify(bio,
+					bbio->orig_physical >> SECTOR_SHIFT,
+					iter->bi_size));
+		}
+		fs_bio_integrity_free(bio);
+	}
+
 	while (iter->bi_size) {
 		struct bio_vec bv = bio_iter_iovec(&bbio->bio, *iter);
 
@@ -412,6 +433,9 @@ static void btrfs_clone_write_end_io(struct bio *bio)
 
 static void btrfs_submit_dev_bio(struct btrfs_device *dev, struct bio *bio)
 {
+	struct btrfs_bio *bbio = btrfs_bio(bio);
+	struct blk_integrity *bi = 0;
+
 	if (!dev || !dev->bdev ||
 	    test_bit(BTRFS_DEV_STATE_MISSING, &dev->dev_state) ||
 	    (btrfs_op(bio) == BTRFS_MAP_WRITE &&
@@ -446,6 +470,26 @@ static void btrfs_submit_dev_bio(struct btrfs_device *dev, struct bio *bio)
 	if (dev->fs_devices->collect_fs_stats && bio_op(bio) == REQ_OP_READ && dev->fs_info)
 		percpu_counter_add(&dev->fs_info->stats_read_blocks,
 				   bio->bi_iter.bi_size >> dev->fs_info->sectorsize_bits);
+
+	if (bio->bi_bdev && bio->bi_bdev->bd_disk)
+		bi = blk_get_integrity(bio->bi_bdev->bd_disk);
+
+	/*
+	 * This generates the PI pretty far down.  Normally we'd want it as close
+	 * as possible to the application, i.e. including direct I/O passthrough.
+	 * But that will require cloning and updating it when using RAID of
+	 * some form.
+	 */
+	if (bi && bbio->inode && !(bio->bi_opf & REQ_META)) {
+		if (bio_op(bio) == REQ_OP_WRITE) {
+			if (!bi->csum_type)
+				__fs_data_csum_generate(bio);
+			else
+				fs_bio_integrity_generate(bio);
+		}
+		if (bio_op(bio) ==  REQ_OP_READ)
+			fs_bio_integrity_alloc(bio);
+	}
 
 	if (bio->bi_opf & REQ_BTRFS_CGROUP_PUNT)
 		blkcg_punt_bio_submit(bio);
@@ -574,8 +618,7 @@ static void btrfs_submit_bio(struct bio *bio, struct btrfs_io_context *bioc,
 		/* Single mirror read/write fast path. */
 		btrfs_bio(bio)->mirror_num = mirror_num;
 		bio->bi_iter.bi_sector = smap->physical >> SECTOR_SHIFT;
-		if (bio_op(bio) != REQ_OP_READ)
-			btrfs_bio(bio)->orig_physical = smap->physical;
+		btrfs_bio(bio)->orig_physical = smap->physical;
 		bio->bi_private = smap->dev;
 		bio->bi_end_io = btrfs_simple_end_io;
 		if (bio_op(bio) == REQ_OP_WRITE) {

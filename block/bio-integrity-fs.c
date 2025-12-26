@@ -4,6 +4,7 @@
  */
 #include <linux/blk-integrity.h>
 #include <linux/bio-integrity.h>
+#include <linux/crc32.h>
 #include "blk.h"
 
 struct fs_bio_integrity_buf {
@@ -11,8 +12,73 @@ struct fs_bio_integrity_buf {
 	struct bio_vec			bvec;
 };
 
+#define FS_CRC_SEED	(~(uint32_t)0)
+
 static struct kmem_cache *fs_bio_integrity_cache;
 static mempool_t fs_bio_integrity_pool;
+
+static inline __le32 fs_end_cksum(uint32_t crc)
+{
+	return ~cpu_to_le32(crc);
+}
+
+static inline void *fs_csum_buf(struct bio *bio)
+{
+	return bvec_virt(bio_integrity(bio)->bip_vec);
+}
+
+static inline __le32 fs_data_csum(void *data, unsigned int len)
+{
+	return fs_end_cksum(crc32c(FS_CRC_SEED, data, len));
+}
+
+void __fs_data_csum_generate(struct bio *bio)
+{
+	unsigned int		ssize = bdev_logical_block_size(bio->bi_bdev);
+	__le32			*csum_buf = fs_csum_buf(bio);
+	struct bvec_iter_all	iter;
+	struct bio_vec		*bv;
+	int			c = 0;
+
+	bio_for_each_segment_all(bv, bio, iter) {
+		void		*p;
+		unsigned int	off;
+
+		p = bvec_kmap_local(bv);
+		for (off = 0; off < bv->bv_len; off += ssize)
+			csum_buf[c++] = fs_data_csum(p + off, ssize);
+		kunmap_local(p);
+	}
+}
+EXPORT_SYMBOL_GPL(__fs_data_csum_generate);
+
+int __fs_data_csum_verify(struct bio *bio, u64 i_ino, u64 file_offset)
+{
+	unsigned int		ssize = bdev_logical_block_size(bio->bi_bdev);
+	__le32			*csum_buf = fs_csum_buf(bio);
+	int			c = 0;
+	struct bvec_iter_all	iter;
+	struct bio_vec		*bv;
+
+	bio_for_each_segment_all(bv, bio, iter) {
+		void		*p;
+		unsigned int	off;
+
+		p = bvec_kmap_local(bv);
+		for (off = 0; off < bv->bv_len; off += ssize) {
+			if (fs_data_csum(p + off, ssize) != csum_buf[c++]) {
+				kunmap_local(p);
+				printk("%s checksum mismatch at inode 0x%llx offset %lld", __func__, i_ino, file_offset);
+				return BLK_STS_PROTECTION;
+			}
+			file_offset += ssize;
+		}
+		kunmap_local(p);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(__fs_data_csum_verify);
 
 void fs_bio_integrity_alloc(struct bio *bio)
 {
