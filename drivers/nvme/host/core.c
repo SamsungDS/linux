@@ -1341,7 +1341,7 @@ static int nvme_cdq_setup_prps(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cd
 	c->cdq.prp1 = prp_list_tmp_dma;
 	cdq->nr_prp_lists = 1;
 
-	for_each_sgtable_sg(&cdq->sgt, sg, i) {
+	for_each_sgtable_dma_sg(&cdq->sgt, sg, i) {
 		if (prp_list_idx == PAGE_SIZE >> 3) {
 			if (cdq->nr_prp_lists == MAX_NR_CDQ_PRPS)
 				goto prps_err;
