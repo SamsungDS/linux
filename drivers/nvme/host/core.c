@@ -1321,9 +1321,20 @@ static void nvme_cdq_free_prp_lists(struct nvme_ctrl *ctrl,
 					  cdq->prp_lists_dma[i]);
 	}
 }
+static int nvme_cdq_setup_prp_single(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq,
+				     struct nvme_command *c)
+{
+	cdq->nr_prp_lists = 0;
+	memset(cdq->prp_lists, 0, sizeof(cdq->prp_lists));
+	cdq->prp_lists_dma[0] = sg_dma_address(cdq->sgt.sgl);
+	cdq->prp_lists_dma[1] = 0;
+	c->cdq.create.cdq_flags = cpu_to_le16(NVME_CDQ_CFG_PC_CONT);
+	c->cdq.prp1 = cdq->prp_lists_dma[0];
+	return 0;
+}
 
-static int nvme_cdq_setup_prps(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq,
-			       struct nvme_command *c)
+static int nvme_cdq_setup_prp_list(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq,
+				   struct nvme_command *c)
 {
 	unsigned int i, prp_list_idx = 0;
 	struct scatterlist *sg;
@@ -1420,7 +1431,11 @@ int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
 	if (ret)
 		return ret;
 
-	ret = nvme_cdq_setup_prps(ctrl, cdq, c);
+	if (cdq->sgt.nents > 1)
+		ret = nvme_cdq_setup_prp_list(ctrl, cdq, c);
+	else
+		ret = nvme_cdq_setup_prp_single(ctrl, cdq, c);
+
 	if (ret)
 		goto err_cdq_free;
 
