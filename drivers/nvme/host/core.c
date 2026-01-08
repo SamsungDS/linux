@@ -1258,7 +1258,6 @@ static int nvme_cdq_alloc_from_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue
 	int ret = -ENOMEM;
 	struct page **pages;
 	struct cdq_nvme_queue *ret_cdq;
-	unsigned long nr_pages = (size_nbytes + PAGE_SIZE -1) >> PAGE_SHIFT;
 
 	if (!PAGE_ALIGN(uaddr))
 		return -EINVAL;
@@ -1267,26 +1266,27 @@ static int nvme_cdq_alloc_from_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue
 	if (!ret_cdq)
 		return -ENOMEM;
 
-	pages = kvmalloc_array(nr_pages, sizeof(struct page*), GFP_KERNEL);
+	ret_cdq->nr_pages = (size_nbytes + PAGE_SIZE -1) >> PAGE_SHIFT;
+	pages = kvmalloc_array(ret_cdq->nr_pages, sizeof(struct page*), GFP_KERNEL);
 	if (!pages)
 		goto free_cdq;
 
-	ret = pin_user_pages(uaddr, nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
-	if (ret != nr_pages) {
+	ret = pin_user_pages(uaddr, ret_cdq->nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
+	if (ret != ret_cdq->nr_pages) {
 		if (ret > 0)
 			unpin_user_pages(pages, ret);
 		ret = -EFAULT;
 		goto free_pages;
 	}
 
-	ret = sg_alloc_table_from_pages_segment( &ret_cdq->sgt, pages, nr_pages,
+	ret = sg_alloc_table_from_pages_segment(&ret_cdq->sgt, pages, ret_cdq->nr_pages,
 					0, size_nbytes, PAGE_SIZE, GFP_KERNEL);
 	if (ret)
 		goto unpin_pages;
 
 	ret = dma_map_sgtable(ctrl->dev, &ret_cdq->sgt, DMA_BIDIRECTIONAL, 0);
 	if (ret)
-		goto unpin_pages;
+		goto free_sgt;
 
 	if (!ret_cdq)
 		return -ENOMEM;
@@ -1296,8 +1296,11 @@ static int nvme_cdq_alloc_from_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue
 
 	return 0;
 
+free_sgt:
+	sg_free_table(&ret_cdq->sgt);
+
 unpin_pages:
-	unpin_user_pages(pages, nr_pages);
+	unpin_user_pages(pages, ret_cdq->nr_pages);
 
 free_pages:
 	kvfree(pages);
@@ -1317,7 +1320,6 @@ static void nvme_cdq_free_prp_lists(struct nvme_ctrl *ctrl,
 					  cdq->prp_lists[i],
 					  cdq->prp_lists_dma[i]);
 	}
-	kvfree(cdq->pages);
 }
 
 static int nvme_cdq_setup_prps(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq,
@@ -1368,7 +1370,12 @@ prps_err:
 
 static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
+	dma_unmap_sgtable(ctrl->dev, &cdq->sgt, DMA_BIDIRECTIONAL, 0);
+	sg_free_table(&cdq->sgt);
+	unpin_user_pages(cdq->pages, cdq->nr_pages);
+
 	nvme_cdq_free_prp_lists(ctrl, cdq);
+	kvfree(cdq->pages);
 	if (cdq->tpt_efd_ctx)
 		eventfd_ctx_put(cdq->tpt_efd_ctx);
 	kfree(cdq);

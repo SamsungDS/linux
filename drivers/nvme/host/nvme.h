@@ -567,6 +567,7 @@ struct cdq_nvme_queue {
 	struct eventfd_ctx *tpt_efd_ctx;
 	struct sg_table sgt;
 	struct page **pages;
+	unsigned long nr_pages;
 	void *prp_lists[MAX_NR_CDQ_PRPS];
 	dma_addr_t prp_lists_dma[MAX_NR_CDQ_PRPS];
 	u32 nr_prp_lists; /*number of PRP lists*/
