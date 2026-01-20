@@ -1223,6 +1223,7 @@ void blk_mq_end_request_batch(struct io_comp_batch *iob)
 
 		blk_crypto_free_request(rq);
 		blk_pm_mark_last_busy(rq);
+		blk_rq_drop_dma_map(rq);
 
 		if (nr_tags == TAG_COMP_BATCH || cur_hctx != rq->mq_hctx) {
 			if (cur_hctx)
