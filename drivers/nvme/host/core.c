@@ -1271,13 +1271,16 @@ static int nvme_cdq_alloc_from_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue
 	if (!pages)
 		goto free_cdq;
 
+	mmap_read_lock(current->mm);
 	ret = pin_user_pages(uaddr, ret_cdq->nr_pages, FOLL_WRITE | FOLL_LONGTERM, pages);
 	if (ret != ret_cdq->nr_pages) {
 		if (ret > 0)
 			unpin_user_pages(pages, ret);
 		ret = -EFAULT;
+		mmap_read_unlock(current->mm);
 		goto free_pages;
 	}
+	mmap_read_unlock(current->mm);
 
 	ret = sg_alloc_table_from_pages_segment(&ret_cdq->sgt, pages, ret_cdq->nr_pages,
 					0, size_nbytes, PAGE_SIZE, GFP_KERNEL);
