@@ -29,5 +29,6 @@ struct udmabuf_create_list {
 
 #define UDMABUF_CREATE       _IOW('u', 0x42, struct udmabuf_create)
 #define UDMABUF_CREATE_LIST  _IOW('u', 0x43, struct udmabuf_create_list)
+#define UDMABUF_MOVE_NOTIFY  _IOW('u', 0x44, int)
 
 #endif /* _UAPI_LINUX_UDMABUF_H */

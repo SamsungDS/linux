@@ -507,6 +507,25 @@ static long udmabuf_ioctl_create_list(struct file *filp, unsigned long arg)
 	return ret;
 }
 
+static long udmabuf_ioctl_move_notify(struct file *filp, unsigned long arg)
+{
+	int fd;
+	struct dma_buf *dmabuf;
+
+	if (copy_from_user(&fd, (void __user *)arg, sizeof(int)))
+		return -EFAULT;
+
+	dmabuf = dma_buf_get(fd);
+	if (IS_ERR(dmabuf))
+		return PTR_ERR(dmabuf);
+
+	dma_resv_lock(dmabuf->resv, NULL);
+	dma_buf_invalidate_mappings(dmabuf);
+	dma_resv_unlock(dmabuf->resv);
+	dma_buf_put(dmabuf);
+	return 0;
+}
+
 static long udmabuf_ioctl(struct file *filp, unsigned int ioctl,
 			  unsigned long arg)
 {
@@ -518,6 +537,9 @@ static long udmabuf_ioctl(struct file *filp, unsigned int ioctl,
 		break;
 	case UDMABUF_CREATE_LIST:
 		ret = udmabuf_ioctl_create_list(filp, arg);
+		break;
+	case UDMABUF_MOVE_NOTIFY:
+		ret = udmabuf_ioctl_move_notify(filp, arg);
 		break;
 	default:
 		ret = -ENOTTY;
