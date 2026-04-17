@@ -3206,6 +3206,43 @@ xfs_default_ag_set_size(
 }
 
 static xfs_agnumber_t
+xfs_inode_write_stream_ag_set(
+	struct xfs_inode	*ip,
+	xfs_agnumber_t		base_agno)
+{
+	struct xfs_mount	*mp = ip->i_mount;
+	uint32_t		nr_streams = xfs_inode_max_write_streams(ip);
+	uint32_t		stream_id = ip->i_write_stream;
+	uint32_t		nr_ags = mp->m_sb.sb_agcount;
+	xfs_agnumber_t		set_size, target_agno = base_agno;
+
+
+	if (!nr_streams) {
+		set_size = xfs_default_ag_set_size(ip);
+		goto out;
+	}
+
+	stream_id -= 1; /* For 0-based math; stream-ids are 1-based */
+	set_size = nr_ags / nr_streams;
+
+	if (set_size) {
+		target_agno = stream_id * set_size;
+		/* unven distribution, last stream will cover extra AGs */
+		if (stream_id == nr_streams - 1)
+			set_size = nr_ags - target_agno;
+	} else {
+		/* for the case when we have fewer AGs than streams */
+		target_agno = stream_id % nr_ags;
+		set_size = 1;
+	}
+
+out:
+	return (target_agno + (XFS_INO_TO_AGINO(mp, ip->i_ino) % set_size)) %
+		mp->m_sb.sb_agcount;
+
+}
+
+static xfs_agnumber_t
 xfs_ag_to_ag_set(
 	struct xfs_bmalloca	*ap,
 	xfs_agnumber_t		base_agno)
@@ -3217,6 +3254,9 @@ xfs_ag_to_ag_set(
 	/* Apply fanning only for regular file data */
 	if (!(ap->datatype & XFS_ALLOC_USERDATA))
 		return base_agno;
+
+	if (ip->i_write_stream)
+		return xfs_inode_write_stream_ag_set(ip, base_agno);
 
 	set_size = xfs_default_ag_set_size(ip);
 	/*
