@@ -45,6 +45,7 @@
 #include "xfs_inode_util.h"
 #include "xfs_metafile.h"
 
+#define XFS_MAX_USER_WRITE_STREAMS		(16)
 struct kmem_cache *xfs_inode_cache;
 
 int
@@ -60,7 +61,15 @@ xfs_inode_max_write_streams(
 		return 0;
 
 	nr_streams = bdev_max_write_streams(bdev) - mp->m_internal_write_streams;
-	return nr_streams;
+	if (nr_streams > 0)
+		return nr_streams;
+	if (XFS_IS_REALTIME_INODE(ip))
+		return 0;
+	/*
+	 * Enable software-only streams if hardware streams are not available.
+	 * This is useful for improving xfs heuristics using application's intent.
+	 */
+	return min_t(uint16_t, mp->m_sb.sb_agcount, XFS_MAX_USER_WRITE_STREAMS);
 }
 
 uint16_t
