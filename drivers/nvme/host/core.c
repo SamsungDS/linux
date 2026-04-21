@@ -1268,6 +1268,8 @@ static int nvme_cdq_map_dma_usr(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *c
 	int ret = -ENOMEM;
 	struct page **pages;
 
+	trace_nvme_cdq_general(cdq, __func__);
+
 	if (!PAGE_ALIGN(uaddr))
 		return -EINVAL;
 
@@ -1324,6 +1326,9 @@ static void nvme_cdq_free_prp_lists(struct nvme_ctrl *ctrl,
 }
 static int nvme_cdq_alloc_prp_single(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
+
+	trace_nvme_cdq_general(cdq, __func__);
+
 	cdq->nr_prp_lists = 0;
 	memset(cdq->prp_lists, 0, sizeof(cdq->prp_lists));
 	cdq->prp_lists_dma[0] = sg_dma_address(cdq->sgt.sgl);
@@ -1337,6 +1342,8 @@ static int nvme_cdq_alloc_prp_list(struct nvme_ctrl *ctrl, struct cdq_nvme_queue
 	struct scatterlist *sg;
 	u64 *prp_list, *prp_list_tmp;
 	dma_addr_t prp_list_tmp_dma;
+
+	trace_nvme_cdq_general(cdq, __func__);
 
 	prp_list = dma_alloc_coherent(ctrl->dev, PAGE_SIZE, &prp_list_tmp_dma, GFP_KERNEL);
 	if (!prp_list)
@@ -1399,6 +1406,7 @@ static int nvme_cdq_cmd_create(struct cdq_nvme_queue *cdq, const u16 mos, const 
 		.cdq.prp1 = cdq->prp_lists_dma[0]
 	};
 
+	trace_nvme_cdq_general(cdq, __func__);
 	ret = __nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, &result, NULL, 0, NVME_QID_ANY, 0);
 	if (ret)
 		return ret;
@@ -1470,6 +1478,7 @@ int nvme_cdq_create(struct nvme_ctrl *ctrl, const u16 mos, const u16 cqs,
 		goto err_cmd_del;
 	}
 
+	trace_nvme_cdq_create(cdq);
 	*cdq_id = cdq->cdq_id;
 
 	return 0;
@@ -1500,6 +1509,8 @@ int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
 	if (xa_is_err(cdq))
 		return -EINVAL;
 
+	trace_nvme_cdq_delete(cdq);
+
 	if (cdq->tpt_efd_ctx)
 		eventfd_ctx_put(cdq->tpt_efd_ctx);
 
@@ -1528,6 +1539,7 @@ static int nvme_cdq_handle_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
 	cdq = xa_load(&ctrl->cdqs, cdq_id);
 	if (!cdq || xa_is_err(cdq) || !cdq->tpt_efd_ctx)
 		return false;
+	trace_nvme_cdq_aen(cdq, __func__);
 
 	eventfd_signal(cdq->tpt_efd_ctx);
 
@@ -5115,6 +5127,7 @@ void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 		/* One-shot events like CDQ tail pointer events. */
 		event_param = le64_to_cpu(res->u64) >> 32;
 		requeue = nvme_handle_aen_oneshot(ctrl, result, event_param);
+		trace_nvme_oneshot_aen(requeue, ctrl->aen_result);
 		break;
 	case NVME_AER_ERROR:
 		/*
