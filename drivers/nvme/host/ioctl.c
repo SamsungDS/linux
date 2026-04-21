@@ -385,6 +385,8 @@ static int nvme_user_cdq(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (copy_from_user(&cmd, ucmd, sizeof(cmd)))
 		return -EFAULT;
 
+	trace_nvme_cdq_ioctl(&cmd);
+
 	/* 21 = 12 (PAGE_SHIFT) + 9 (PAGE_SHIFT / sizeof(u64)) */
 	if (cmd.size_nbyte > MAX_NR_CDQ_PRPS << 21)
 		return -EINVAL;

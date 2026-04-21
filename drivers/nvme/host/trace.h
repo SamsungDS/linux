@@ -10,6 +10,7 @@
 #if !defined(_TRACE_NVME_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_NVME_H
 
+#include <linux/nvme_ioctl.h>
 #include <linux/nvme.h>
 #include <linux/tracepoint.h>
 #include <linux/trace_seq.h>
@@ -80,6 +81,112 @@ TRACE_EVENT(nvme_setup_cmd,
 				__entry->fctype),
 		      parse_nvme_cmd(__entry->qid, __entry->opcode,
 				__entry->fctype, __entry->cdw10))
+);
+
+TRACE_EVENT(nvme_cdq_ioctl,
+	    TP_PROTO(struct nvme_cdq_cmd *cdq_cmd),
+	    TP_ARGS(cdq_cmd),
+	    TP_STRUCT__entry(
+		__field(u32, size_nbyte)
+		__field(u64, entries)
+		__field(int, tpt_fd)
+		__field(u16, cqs)
+		__field(u16, mos)
+	    ),
+	    TP_fast_assign(
+		__entry->size_nbyte = cdq_cmd->size_nbyte;
+		__entry->entries = cdq_cmd->entries;
+		__entry->tpt_fd = cdq_cmd->tpt_fd;
+		__entry->cqs = cdq_cmd->cqs;
+		__entry->mos = cdq_cmd->mos;
+	    ),
+	    TP_printk("nvme: size=%d, entries=%lld, tpt_fd=%d, cqs=%d, mos=%d",
+		      __entry->size_nbyte, __entry->entries, __entry->tpt_fd,
+		      __entry->cqs, __entry->mos)
+);
+
+TRACE_EVENT(nvme_oneshot_aen,
+	    TP_PROTO(bool requeue, u32 result),
+	    TP_ARGS(requeue, result),
+	    TP_STRUCT__entry(
+		__field(bool, requeue)
+		__field(u32, result)
+	    ),
+	    TP_fast_assign(
+		__entry->requeue = requeue;
+		__entry->result = result;
+	    ),
+	    TP_printk("nvme: requeue=%d, result=%d", __entry->requeue, __entry->result)
+);
+
+TRACE_EVENT(nvme_cdq_general,
+	    TP_PROTO(struct cdq_nvme_queue *cdq, const char *func),
+	    TP_ARGS(cdq, func),
+	    TP_STRUCT__entry(
+		__field(int, ctrl_id)
+		__field(u16, cdq_id)
+		__field(u32, size_nbyte)
+		__field(unsigned long, nr_pages)
+		__field(u32, nr_prp_lists)
+		__field(const char*, func)
+	    ),
+	    TP_fast_assign(
+		__entry->ctrl_id = cdq->ctrl->instance;
+		__entry->cdq_id = cdq->cdq_id;
+		__entry->size_nbyte = cdq->size_nbyte;
+		__entry->nr_pages = cdq->nr_pages;
+		__entry->nr_prp_lists = cdq->nr_prp_lists;
+		__entry->func = func;
+	    ),
+	    TP_printk("nvme%d: id=%d, size=%d, nr_pages=%ld, nr_prp_lists=%d, func=%s",
+		       __entry->ctrl_id, __entry->cdq_id, __entry->size_nbyte,
+		       __entry->nr_pages, __entry->nr_prp_lists, __entry->func)
+);
+
+#define trace_nvme_cdq_aen trace_nvme_cdq_general
+
+TRACE_EVENT(nvme_cdq_delete,
+	    TP_PROTO(struct cdq_nvme_queue *cdq),
+	    TP_ARGS(cdq),
+	    TP_STRUCT__entry(
+		__field(int, ctrl_id)
+		__field(u16, cdq_id)
+		__field(u32, size_nbyte)
+		__field(unsigned long, nr_pages)
+		__field(u32, nr_prp_lists)
+	    ),
+	    TP_fast_assign(
+		__entry->ctrl_id = cdq->ctrl->instance;
+		__entry->cdq_id = cdq->cdq_id;
+		__entry->size_nbyte = cdq->size_nbyte;
+		__entry->nr_pages = cdq->nr_pages;
+		__entry->nr_prp_lists = cdq->nr_prp_lists;
+	    ),
+	    TP_printk("nvme%d: id=%d, size=%d, nr_pages=%ld, nr_prp_lists=%d",
+		       __entry->ctrl_id, __entry->cdq_id, __entry->size_nbyte,
+		       __entry->nr_pages, __entry->nr_prp_lists)
+);
+
+TRACE_EVENT(nvme_cdq_create,
+	    TP_PROTO(struct cdq_nvme_queue *cdq),
+	    TP_ARGS(cdq),
+	    TP_STRUCT__entry(
+		__field(int, ctrl_id)
+		__field(u16, cdq_id)
+		__field(u32, size_nbyte)
+		__field(unsigned long, nr_pages)
+		__field(u32, nr_prp_lists)
+	    ),
+	    TP_fast_assign(
+		__entry->ctrl_id = cdq->ctrl->instance;
+		__entry->cdq_id = cdq->cdq_id;
+		__entry->size_nbyte = cdq->size_nbyte;
+		__entry->nr_pages = cdq->nr_pages;
+		__entry->nr_prp_lists = cdq->nr_prp_lists;
+	    ),
+	    TP_printk("nvme%d: id=%d, size=%d, nr_pages=%ld, nr_prp_lists=%d",
+		       __entry->ctrl_id, __entry->cdq_id, __entry->size_nbyte,
+		       __entry->nr_pages, __entry->nr_prp_lists)
 );
 
 TRACE_EVENT(nvme_complete_rq,
