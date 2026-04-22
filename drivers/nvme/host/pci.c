@@ -402,6 +402,8 @@ struct nvme_dmabuf_token {
 struct nvme_dmabuf_map {
 	struct io_dmabuf_map base;
 	dma_addr_t *dma_list;
+	__le64 *prp_array;
+	dma_addr_t prp_array_dma;
 	struct sg_table *sgt;
 	unsigned nr_entries;
 };
@@ -926,14 +928,14 @@ static blk_status_t nvme_rq_setup_dmabuf_map(struct request *req,
 	u64 dma_addr, prp1_dma, prp2_dma;
 	struct bio *bio = req->bio;
 	struct nvme_dmabuf_map *map;
-	dma_addr_t *dma_list;
+	dma_addr_t prp_list_start, prp_list_end;
 	dma_addr_t prp_dma;
 	__le64 *prp_list;
+	unsigned int nprps;
 	int i, map_idx;
 	int offset;
 
 	map = container_of(bio->dmabuf_map, struct nvme_dmabuf_map, base);
-	dma_list = map->dma_list;
 
 	nvme_sync_dma(nvmeq->dev, req, false);
 
@@ -941,7 +943,7 @@ static blk_status_t nvme_rq_setup_dmabuf_map(struct request *req,
 	map_idx = offset / NVME_CTRL_PAGE_SIZE;
 	offset &= (NVME_CTRL_PAGE_SIZE - 1);
 
-	prp1_dma = dma_list[map_idx++] + offset;
+	prp1_dma = map->dma_list[map_idx++] + offset;
 
 	length -= (NVME_CTRL_PAGE_SIZE - offset);
 	if (length <= 0) {
@@ -950,8 +952,20 @@ static blk_status_t nvme_rq_setup_dmabuf_map(struct request *req,
 	}
 
 	if (length <= NVME_CTRL_PAGE_SIZE) {
-		prp2_dma = dma_list[map_idx];
+		prp2_dma = map->dma_list[map_idx];
 		goto done;
+	}
+
+	if (map->prp_array) {
+		nprps = DIV_ROUND_UP(length, NVME_CTRL_PAGE_SIZE);
+		prp_list_start = map->prp_array_dma +
+				 map_idx * sizeof(*map->prp_array);
+		prp_list_end = prp_list_start + nprps * sizeof(*map->prp_array);
+		if ((prp_list_start >> NVME_CTRL_PAGE_SHIFT) ==
+		    ((prp_list_end - 1) >> NVME_CTRL_PAGE_SHIFT)) {
+			prp2_dma = prp_list_start;
+			goto done;
+		}
 	}
 
 	if (DIV_ROUND_UP(length, NVME_CTRL_PAGE_SIZE) <=
@@ -980,7 +994,7 @@ static blk_status_t nvme_rq_setup_dmabuf_map(struct request *req,
 			i = 1;
 		}
 
-		dma_addr = dma_list[map_idx++];
+		dma_addr = map->dma_list[map_idx++];
 		prp_list[i++] = cpu_to_le64(dma_addr);
 
 		length -= NVME_CTRL_PAGE_SIZE;
@@ -2597,7 +2611,6 @@ static struct io_dmabuf_map *nvme_dmabuf_token_map(struct io_dmabuf_token *token
 {
 	struct nvme_dmabuf_token *data = token->dev_priv;
 	struct dma_buf_attachment *attach = data->attach;
-	dma_addr_t *dma_list = NULL;
 	unsigned long tmp, i = 0;
 	struct nvme_dmabuf_map *map;
 	struct scatterlist *sg;
@@ -2607,16 +2620,21 @@ static struct io_dmabuf_map *nvme_dmabuf_token_map(struct io_dmabuf_token *token
 
 	dma_resv_assert_held(token->dmabuf->resv);
 
-	map = kmalloc(sizeof(*map), GFP_KERNEL);
+	map = kzalloc(sizeof(*map), GFP_KERNEL);
 	if (!map)
 		return ERR_PTR(-ENOMEM);
 
 	nr_entries = token->dmabuf->size / NVME_CTRL_PAGE_SIZE;
-	dma_list = kmalloc_array(nr_entries, sizeof(dma_list[0]), GFP_KERNEL);
-	if (!dma_list) {
+	map->dma_list = kmalloc_array(nr_entries, sizeof(map->dma_list[0]),
+				      GFP_KERNEL);
+	if (!map->dma_list) {
 		ret = -ENOMEM;
 		goto err;
 	}
+
+	map->prp_array = dma_alloc_coherent(attach->dev,
+				nr_entries * sizeof(*map->prp_array),
+				&map->prp_array_dma, GFP_KERNEL);
 
 	sgt = dma_buf_map_attachment(attach, token->dir);
 	if (IS_ERR(sgt)) {
@@ -2630,7 +2648,10 @@ static struct io_dmabuf_map *nvme_dmabuf_token_map(struct io_dmabuf_token *token
 		unsigned long sg_len = sg_dma_len(sg);
 
 		while (sg_len) {
-			dma_list[i++] = dma;
+			map->dma_list[i] = dma;
+			if (map->prp_array)
+				map->prp_array[i] = cpu_to_le64(dma);
+			i++;
 			dma += NVME_CTRL_PAGE_SIZE;
 			sg_len -= NVME_CTRL_PAGE_SIZE;
 		}
@@ -2640,14 +2661,17 @@ static struct io_dmabuf_map *nvme_dmabuf_token_map(struct io_dmabuf_token *token
 	if (ret)
 		goto err;
 	map->nr_entries = nr_entries;
-	map->dma_list = dma_list;
 	map->sgt = sgt;
 	return &map->base;
 err:
 	if (sgt)
 		dma_buf_unmap_attachment(attach, sgt, token->dir);
+	if (map->prp_array)
+		dma_free_coherent(attach->dev,
+				  nr_entries * sizeof(*map->prp_array),
+				  map->prp_array, map->prp_array_dma);
+	kfree(map->dma_list);
 	kfree(map);
-	kfree(dma_list);
 	return ERR_PTR(ret);
 }
 
@@ -2661,6 +2685,10 @@ static void nvme_dmabuf_token_unmap(struct io_dmabuf_token *token,
 	dma_resv_assert_held(token->dmabuf->resv);
 
 	dma_buf_unmap_attachment(data->attach, map->sgt, token->dir);
+	if (map->prp_array)
+		dma_free_coherent(data->attach->dev,
+				  map->nr_entries * sizeof(*map->prp_array),
+				  map->prp_array, map->prp_array_dma);
 	kfree(map->dma_list);
 }
 
