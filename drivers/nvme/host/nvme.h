@@ -410,6 +410,7 @@ struct nvme_ctrl {
 
 	enum nvme_ctrl_type cntrltype;
 	enum nvme_dctype dctype;
+	struct xarray cdqs; /* Controller Data Queue */
 };
 
 static inline enum nvme_ctrl_state nvme_ctrl_state(struct nvme_ctrl *ctrl)
@@ -557,6 +558,21 @@ static inline bool nvme_ns_has_pi(struct nvme_ns_head *head)
 {
 	return head->pi_type && head->ms == head->pi_size;
 }
+
+#define MAX_NR_CDQ_PRPS		20
+struct cdq_nvme_queue {
+	struct nvme_ctrl *ctrl;
+	__u32	size_nbyte;
+	u16 cdq_id;
+	struct eventfd_ctx *tpt_efd_ctx;
+	struct sg_table sgt;
+	struct page **pages;
+	unsigned long nr_pages;
+	void *prp_lists[MAX_NR_CDQ_PRPS];
+	dma_addr_t prp_lists_dma[MAX_NR_CDQ_PRPS];
+	u32 nr_prp_lists; /*number of PRP lists*/
+
+};
 
 struct nvme_ctrl_ops {
 	const char *name;
