@@ -437,6 +437,23 @@ static ssize_t nvme_sysfs_show_state(struct device *dev,
 
 static DEVICE_ATTR(state, S_IRUGO, nvme_sysfs_show_state, NULL);
 
+static ssize_t nvme_sysfs_show_cdq(struct device *dev,
+				   struct device_attribute *attr,
+				   char *buf)
+{
+	struct nvme_ctrl *ctrl = dev_get_drvdata(dev);
+
+	struct cdq_nvme_queue *cdq;
+	uint accum = 0;
+	unsigned long i;
+
+	xa_for_each(&ctrl->cdqs, i, cdq)
+		accum++;
+
+	return sysfs_emit(buf, "%d\n", accum);
+}
+static DEVICE_ATTR(num_cdqs, S_IRUGO, nvme_sysfs_show_cdq, NULL);
+
 static ssize_t nvme_sysfs_show_subsysnqn(struct device *dev,
 					 struct device_attribute *attr,
 					 char *buf)
@@ -770,6 +787,7 @@ static struct attribute *nvme_dev_attrs[] = {
 	&dev_attr_dhchap_ctrl_secret.attr,
 #endif
 	&dev_attr_adm_passthru_err_log_enabled.attr,
+	&dev_attr_num_cdqs.attr,
 	NULL
 };
 
