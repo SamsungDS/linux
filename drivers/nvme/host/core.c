@@ -1010,6 +1010,7 @@ static inline blk_status_t nvme_setup_rw(struct nvme_ns *ns,
 
 		if (write_stream) {
 			dsmgmt |= ns->head->plids[write_stream - 1] << 16;
+			printk("%s: write with stream %u, count %u\n", __func__, write_stream, blk_rq_bytes(req) >> ns->head->lba_shift);
 			control |= NVME_RW_DTYPE_DPLCMT;
 		}
 	}
@@ -2252,7 +2253,7 @@ static int nvme_query_fdp_granularity(struct nvme_ctrl *ctrl,
 		}
 	}
 
-	if (le32_to_cpu(desc->nrg) > 1) {
+	if (0 && le32_to_cpu(desc->nrg) > 1) {
 		dev_warn(ctrl->device, "FDP NRG > 1 not supported\n");
 		ret = 0;
 		goto out;
