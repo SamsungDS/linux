@@ -1603,6 +1603,8 @@ xlog_write_iclog(
 
 	iclog->ic_flags &= ~(XLOG_ICL_NEED_FLUSH | XLOG_ICL_NEED_FUA);
 
+	iclog->ic_bio.bi_write_stream = log->l_mp->m_log_write_stream;
+
 	if (is_vmalloc_addr(iclog->ic_header)) {
 		if (!bio_add_vmalloc(&iclog->ic_bio, iclog->ic_header, count))
 			goto shutdown;

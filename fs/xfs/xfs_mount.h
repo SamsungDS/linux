@@ -237,6 +237,9 @@ typedef struct xfs_mount {
 	bool			m_update_sb;	/* sb needs update in mount */
 	unsigned int		m_max_open_zones;
 	unsigned int		m_zonegc_low_space;
+	uint16_t		m_internal_write_streams;
+	uint16_t		m_log_write_stream;
+	uint16_t		m_meta_write_stream;
 
 	/* max_atomic_write mount option value */
 	unsigned long long	m_awu_max_bytes;

@@ -822,6 +822,43 @@ xfs_rtbtree_compute_maxlevels(
 				      mp->m_rtrefc_maxlevels);
 }
 
+#define XFS_MAX_INTERNAL_WRITE_STREAMS	(2)
+
+static void
+xfs_internal_write_stream_init(
+	struct xfs_mount	*mp)
+{
+	struct block_device	*bdev;
+	uint16_t	hw_streams;
+	bool		internal_log;
+
+	mp->m_internal_write_streams = 0;
+	mp->m_meta_write_stream = 0;
+	mp->m_log_write_stream = 0;
+
+	bdev = mp->m_ddev_targp->bt_bdev;
+	if (!bdev) /*TBD: see if this can really happen? */
+		return;
+
+	internal_log = (mp->m_logdev_targp == mp->m_ddev_targp);
+
+
+	hw_streams = bdev_max_write_streams(bdev);
+	if (hw_streams > XFS_MAX_INTERNAL_WRITE_STREAMS && internal_log) {
+		mp->m_meta_write_stream = hw_streams;
+		mp->m_log_write_stream = hw_streams - 1;
+		mp->m_internal_write_streams = XFS_MAX_INTERNAL_WRITE_STREAMS;
+	} else if (hw_streams > 1 && !internal_log) {
+		/* log is external, reserve only one stream for meta */
+		mp->m_meta_write_stream = hw_streams;
+		mp->m_internal_write_streams = 1;
+	} else if (hw_streams > 0) {
+		mp->m_meta_write_stream = hw_streams;
+		if (internal_log)
+			mp->m_log_write_stream = mp->m_meta_write_stream;
+		mp->m_internal_write_streams = 1;
+	}
+}
 /*
  * This function does the following on an initial mount of a file system:
  *	- reads the superblock from disk and init the mount struct
@@ -969,6 +1006,7 @@ xfs_mountfs(
 		goto out_remove_uuid;
 	}
 
+	xfs_internal_write_stream_init(mp);
 	/*
 	 *  Copies the low order bits of the timestamp and the randomly
 	 *  set "sequence" number out of a UUID.

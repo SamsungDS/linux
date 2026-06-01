@@ -52,12 +52,15 @@ xfs_inode_max_write_streams(
 	struct xfs_inode	*ip)
 {
 	struct block_device	*bdev;
+	struct xfs_mount	*mp = ip->i_mount;
+	int nr_streams;
 
 	bdev = xfs_inode_buftarg(ip)->bt_bdev;
 	if (!bdev)
 		return 0;
 
-	return bdev_max_write_streams(bdev);
+	nr_streams = bdev_max_write_streams(bdev) - mp->m_internal_write_streams;
+	return nr_streams;
 }
 
 uint16_t

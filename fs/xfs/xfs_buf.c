@@ -1257,6 +1257,9 @@ xfs_buf_submit_bio(
 	bio->bi_private = bp;
 	bio->bi_end_io = xfs_buf_bio_end_io;
 
+	if (bp->b_flags & XBF_WRITE && bp->b_target == bp->b_mount->m_ddev_targp)
+		bio->bi_write_stream = bp->b_mount->m_meta_write_stream;
+
 	/*
 	 * If there is more than one map segment, split out a new bio for each
 	 * map except of the last one.  The last map is handled by the
