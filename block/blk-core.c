@@ -765,6 +765,8 @@ static void __submit_bio_noacct_mq(struct bio *bio)
 void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 {
 	if (unlikely(may_fail_bio(bio))) {
+		if (blk_error_inject(bio))
+			return;
 		if (should_fail_request(bio->bi_iter.bi_size)) {
 			bio_io_error(bio);
 			return;

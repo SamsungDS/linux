@@ -227,6 +227,11 @@ struct gendisk {
 	 */
 	struct blk_independent_access_ranges *ia_ranges;
 
+#ifdef CONFIG_FAIL_MAKE_REQUEST
+	struct mutex		error_injection_lock;
+	struct list_head	error_injection_list;
+#endif
+
 	struct mutex rqos_state_mutex;	/* rqos state change mutex */
 };
 

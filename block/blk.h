@@ -781,4 +781,19 @@ static inline void blk_debugfs_unlock(struct request_queue *q,
 	memalloc_noio_restore(memflags);
 }
 
+void blk_error_injection_init(struct gendisk *disk);
+void blk_error_injection_exit(struct gendisk *disk);
+
+bool __blk_error_inject(struct bio *bio);
+static inline bool blk_error_inject(struct bio *bio)
+{
+#ifdef CONFIG_FAIL_MAKE_REQUEST
+	struct gendisk *disk = bio->bi_bdev->bd_disk;
+
+	if (!list_empty_careful(&disk->error_injection_list))
+		return __blk_error_inject(bio);
+#endif
+	return false;
+}
+
 #endif /* BLK_INTERNAL_H */
