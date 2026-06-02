@@ -29,7 +29,6 @@
 #include <linux/swap.h>
 #include <linux/writeback.h>
 #include <linux/task_io_accounting_ops.h>
-#include <linux/fault-inject.h>
 #include <linux/list_sort.h>
 #include <linux/delay.h>
 #include <linux/ratelimit.h>
@@ -534,32 +533,6 @@ bool blk_get_queue(struct request_queue *q)
 }
 EXPORT_SYMBOL(blk_get_queue);
 
-#ifdef CONFIG_FAIL_MAKE_REQUEST
-
-static DECLARE_FAULT_ATTR(fail_make_request);
-
-static int __init setup_fail_make_request(char *str)
-{
-	return setup_fault_attr(&fail_make_request, str);
-}
-__setup("fail_make_request=", setup_fail_make_request);
-
-bool should_fail_request(unsigned int bytes)
-{
-	return should_fail(&fail_make_request, bytes);
-}
-
-static int __init fail_make_request_debugfs(void)
-{
-	struct dentry *dir = fault_create_debugfs_attr("fail_make_request",
-						NULL, &fail_make_request);
-
-	return PTR_ERR_OR_ZERO(dir);
-}
-
-late_initcall(fail_make_request_debugfs);
-#endif /* CONFIG_FAIL_MAKE_REQUEST */
-
 static inline void bio_check_ro(struct bio *bio)
 {
 	if (op_is_write(bio_op(bio)) && bdev_read_only(bio->bi_bdev)) {
@@ -764,14 +737,8 @@ static void __submit_bio_noacct_mq(struct bio *bio)
 
 void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 {
-	if (unlikely(may_fail_bio(bio))) {
-		if (blk_error_inject(bio))
-			return;
-		if (should_fail_request(bio->bi_iter.bi_size)) {
-			bio_io_error(bio);
-			return;
-		}
-	}
+	if (unlikely(may_fail_bio(bio)) && blk_error_inject(bio))
+		return;
 
 	blk_cgroup_bio_start(bio);
 

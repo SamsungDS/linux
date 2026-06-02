@@ -4,6 +4,7 @@
  */
 #include <linux/debugfs.h>
 #include <linux/blkdev.h>
+#include <linux/fault-inject.h>
 #include <linux/parser.h>
 #include <linux/seq_file.h>
 #include "blk.h"
@@ -47,6 +48,13 @@ bool __blk_error_inject(struct bio *bio)
 		}
 	}
 	rcu_read_unlock();
+
+	/* legacy I/O error injection */
+	if (should_fail_request(bio->bi_iter.bi_size)) {
+		bio_io_error(bio);
+		return true;
+	}
+
 	return false;
 }
 
@@ -297,3 +305,25 @@ void blk_error_injection_exit(struct gendisk *disk)
 {
 	error_inject_removall(disk);
 }
+
+static DECLARE_FAULT_ATTR(fail_make_request);
+
+bool should_fail_request(unsigned int bytes)
+{
+	return should_fail(&fail_make_request, bytes);
+}
+
+static int __init setup_fail_make_request(char *str)
+{
+	return setup_fault_attr(&fail_make_request, str);
+}
+__setup("fail_make_request=", setup_fail_make_request);
+
+static int __init fail_make_request_debugfs(void)
+{
+	struct dentry *dir = fault_create_debugfs_attr("fail_make_request",
+						NULL, &fail_make_request);
+
+	return PTR_ERR_OR_ZERO(dir);
+}
+late_initcall(fail_make_request_debugfs);
