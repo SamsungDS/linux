@@ -502,10 +502,9 @@ static int __init setup_fail_make_request(char *str)
 }
 __setup("fail_make_request=", setup_fail_make_request);
 
-bool should_fail_request(struct block_device *part, unsigned int bytes)
+bool should_fail_request(unsigned int bytes)
 {
-	return bdev_test_flag(part, BD_MAKE_IT_FAIL) &&
-	       should_fail(&fail_make_request, bytes);
+	return should_fail(&fail_make_request, bytes);
 }
 
 static int __init fail_make_request_debugfs(void)
@@ -539,11 +538,13 @@ static inline void bio_check_ro(struct bio *bio)
 	}
 }
 
-static int should_fail_bio(struct bio *bio)
+static inline bool may_fail_bio(struct bio *bio)
 {
-	if (should_fail_request(bdev_whole(bio->bi_bdev), bio->bi_iter.bi_size))
-		return -EIO;
-	return 0;
+	if (!IS_ENABLED(CONFIG_FAIL_MAKE_REQUEST))
+		return false;
+	return bdev_test_flag(bio->bi_bdev, BD_MAKE_IT_FAIL) ||
+		(bio_flagged(bio, BIO_REMAPPED) &&
+		 bdev_test_flag(bdev_whole(bio->bi_bdev), BD_MAKE_IT_FAIL));
 }
 
 /*
@@ -577,8 +578,6 @@ static int blk_partition_remap(struct bio *bio)
 {
 	struct block_device *p = bio->bi_bdev;
 
-	if (unlikely(should_fail_request(p, bio->bi_iter.bi_size)))
-		return -EIO;
 	if (bio_sectors(bio)) {
 		bio->bi_iter.bi_sector += p->bd_start_sect;
 		trace_block_bio_remap(bio, p->bd_dev,
@@ -723,10 +722,13 @@ static void __submit_bio_noacct_mq(struct bio *bio)
 
 void submit_bio_noacct_nocheck(struct bio *bio, bool split)
 {
-	if (should_fail_bio(bio)) {
-		bio_io_error(bio);
-		return;
+	if (unlikely(may_fail_bio(bio))) {
+		if (should_fail_request(bio->bi_iter.bi_size)) {
+			bio_io_error(bio);
+			return;
+		}
 	}
+
 	blk_cgroup_bio_start(bio);
 
 	if (!bio_flagged(bio, BIO_TRACE_COMPLETION)) {
@@ -799,8 +801,6 @@ void submit_bio_noacct(struct bio *bio)
 			goto not_supported;
 	}
 
-	if (should_fail_bio(bio))
-		goto end_io;
 	bio_check_ro(bio);
 	if (!bio_flagged(bio, BIO_REMAPPED)) {
 		if (unlikely(bio_check_eod(bio)))

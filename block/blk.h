@@ -647,10 +647,9 @@ int disk_register_independent_access_ranges(struct gendisk *disk);
 void disk_unregister_independent_access_ranges(struct gendisk *disk);
 
 #ifdef CONFIG_FAIL_MAKE_REQUEST
-bool should_fail_request(struct block_device *part, unsigned int bytes);
+bool should_fail_request(unsigned int bytes);
 #else /* CONFIG_FAIL_MAKE_REQUEST */
-static inline bool should_fail_request(struct block_device *part,
-					unsigned int bytes)
+static inline bool should_fail_request(unsigned int bytes)
 {
 	return false;
 }

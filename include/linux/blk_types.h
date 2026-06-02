@@ -51,9 +51,7 @@ struct block_device {
 #define BD_WRITE_HOLDER		(1u<<9)
 #define BD_HAS_SUBMIT_BIO	(1u<<10)
 #define BD_RO_WARNED		(1u<<11)
-#ifdef CONFIG_FAIL_MAKE_REQUEST
 #define BD_MAKE_IT_FAIL		(1u<<12)
-#endif
 	dev_t			bd_dev;
 	struct address_space	*bd_mapping;	/* page cache */
 
