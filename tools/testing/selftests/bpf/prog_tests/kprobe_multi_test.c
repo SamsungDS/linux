@@ -588,12 +588,13 @@ static void test_attach_override(void)
 		goto cleanup;
 	}
 
-	/* The should_fail_bio function is on error injection list,
+	/* The __filemap_add_folio function is on error injection list,
 	 * attach should succeed.
 	 */
 	link = bpf_program__attach_kprobe_multi_opts(skel->progs.test_override,
-						     "should_fail_bio", NULL);
-	if (!ASSERT_OK_PTR(link, "override_attached_should_fail_bio"))
+						     "__filemap_add_folio,",
+						     NULL);
+	if (!ASSERT_OK_PTR(link, "override_attached___filemap_add_folio,"))
 		goto cleanup;
 
 	bpf_link__destroy(link);

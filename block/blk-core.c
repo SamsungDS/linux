@@ -545,7 +545,6 @@ int should_fail_bio(struct bio *bio)
 		return -EIO;
 	return 0;
 }
-ALLOW_ERROR_INJECTION(should_fail_bio, ERRNO);
 
 /*
  * Check whether this bio extends beyond the end of the device or partition.
