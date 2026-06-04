@@ -2644,6 +2644,42 @@ static int nvme_wait_ready(struct nvme_ctrl *ctrl, u32 mask, u32 val,
 	return ret;
 }
 
+static int nvme_submit_delete_cdq_cmd(const struct cdq_nvme_queue *cdq)
+{
+	struct nvme_command c = {
+		.cdq.opcode = nvme_admin_cdq,
+		.cdq.sel = NVME_CDQ_SEL_DELETE_CDQ,
+		.cdq.dw11.cdqid = cpu_to_le16(cdq->id)
+	};
+
+	return __nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, NULL, NULL, 0, NVME_QID_ANY, 0);
+}
+
+/* Sends a CDQ delete NVMe cmd */
+static void nvme_delete_cdq_ctrl(struct cdq_nvme_queue *cdq)
+{
+	if (nvme_submit_delete_cdq_cmd(cdq))
+		WARN_ONCE(1, "Failed delete CDQ (id: %d)", cdq->id);
+}
+
+/* Does NOT send a CDQ delete NVMe cmd */
+static void nvme_delete_cdq_host(struct cdq_nvme_queue *cdq)
+{
+	u16 cdq_id = cdq->id;
+	struct nvme_ctrl *ctrl = cdq->ctrl;
+
+	xa_erase(&ctrl->cdqs, cdq_id);
+}
+
+void nvme_delete_cdq(struct cdq_nvme_queue *cdq)
+{
+	nvme_delete_cdq_ctrl(cdq);
+	nvme_delete_cdq_host(cdq);
+}
+EXPORT_SYMBOL_GPL(nvme_delete_cdq);
+
+
+static void nvme_delete_cdqs_host(struct nvme_ctrl *ctrl);
 int nvme_disable_ctrl(struct nvme_ctrl *ctrl, bool shutdown)
 {
 	int ret;
@@ -2665,9 +2701,19 @@ int nvme_disable_ctrl(struct nvme_ctrl *ctrl, bool shutdown)
 	}
 	if (ctrl->quirks & NVME_QUIRK_DELAY_BEFORE_CHK_RDY)
 		msleep(NVME_QUIRK_DELAY_AMOUNT);
-	return nvme_wait_ready(ctrl, NVME_CSTS_RDY, 0,
+	ret =  nvme_wait_ready(ctrl, NVME_CSTS_RDY, 0,
 			       (NVME_CAP_TIMEOUT(ctrl->cap) + 1) / 2, "reset");
+	if (ret)
+		return ret;
+
+	/*
+	 * Delete host side CDQ only. Purposefully NOT sending delete cmd.
+	 * Ctrl should delete on disable.
+	 */
+	nvme_delete_cdqs_host(ctrl);
+	return ret;
 }
+
 EXPORT_SYMBOL_GPL(nvme_disable_ctrl);
 
 int nvme_enable_ctrl(struct nvme_ctrl *ctrl)
@@ -5063,6 +5109,27 @@ static void nvme_free_cels(struct nvme_ctrl *ctrl)
 	xa_destroy(&ctrl->cels);
 }
 
+/* Will NOT send a CDQ delete NVMe cmd. */
+static void nvme_delete_cdqs_host(struct nvme_ctrl *ctrl)
+{
+	struct cdq_nvme_queue *cdq;
+	unsigned long i;
+
+	xa_for_each(&ctrl->cdqs, i, cdq)
+		nvme_delete_cdq_host(cdq);
+}
+
+/* Final teardown at device->release: free all CDQs and destroy the xarray. */
+static void nvme_free_cdqs(struct nvme_ctrl *ctrl)
+{
+	/*
+	 * Delete host side CDQ only. NOT sending delete cmd as
+	 * Ctrl should delete on disable.
+	 */
+	nvme_delete_cdqs_host(ctrl);
+	xa_destroy(&ctrl->cdqs);
+}
+
 static void nvme_free_ctrl(struct device *dev)
 {
 	struct nvme_ctrl *ctrl =
@@ -5074,6 +5141,7 @@ static void nvme_free_ctrl(struct device *dev)
 	if (!subsys || ctrl->instance != subsys->instance)
 		ida_free(&nvme_instance_ida, ctrl->instance);
 	nvme_free_cels(ctrl);
+	nvme_free_cdqs(ctrl);
 	nvme_mpath_uninit(ctrl);
 	cleanup_srcu_struct(&ctrl->srcu);
 	nvme_auth_stop(ctrl);
@@ -5120,6 +5188,7 @@ int nvme_init_ctrl(struct nvme_ctrl *ctrl, struct device *dev,
 	mutex_init(&ctrl->scan_lock);
 	INIT_LIST_HEAD(&ctrl->namespaces);
 	xa_init(&ctrl->cels);
+	xa_init(&ctrl->cdqs);
 	ctrl->dev = dev;
 	ctrl->ops = ops;
 	ctrl->quirks = quirks;

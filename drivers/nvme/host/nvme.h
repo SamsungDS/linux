@@ -466,6 +466,7 @@ struct nvme_ctrl {
 	enum nvme_dctype dctype;
 
 	u16			awupf; /* 0's based value. */
+	struct xarray cdqs;
 };
 
 static inline enum nvme_ctrl_state nvme_ctrl_state(struct nvme_ctrl *ctrl)
@@ -618,6 +619,14 @@ static inline unsigned long nvme_get_virt_boundary(struct nvme_ctrl *ctrl,
 {
 	return NVME_CTRL_PAGE_SIZE - 1;
 }
+
+struct cdq_nvme_queue {
+	u16 id;
+	struct nvme_ctrl *ctrl;
+	u32 size_nbyte;
+};
+
+void nvme_delete_cdq(struct cdq_nvme_queue *cdq);
 
 struct nvme_ctrl_ops {
 	const char *name;
