@@ -239,6 +239,14 @@ blk_status_t tag_to_blk_status(const char *tag)
 	return BLK_STS_OK;
 }
 
+bool blk_status_is_valid(blk_status_t status)
+{
+	int idx = (__force int)status;
+
+	return idx > 0 && idx < ARRAY_SIZE(blk_errors);
+}
+EXPORT_SYMBOL_GPL(blk_status_is_valid);
+
 /**
  * blk_sync_queue - cancel any pending callbacks on a queue
  * @q: the queue

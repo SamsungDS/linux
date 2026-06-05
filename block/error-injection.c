@@ -49,6 +49,9 @@ bool __blk_error_inject(struct bio *bio)
 	}
 	rcu_read_unlock();
 
+	if (blk_error_inject_bpf(bio))
+		return true;
+
 	/* legacy I/O error injection */
 	if (should_fail_request(bio->bi_iter.bi_size)) {
 		bio_io_error(bio);

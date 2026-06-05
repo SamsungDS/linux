@@ -215,6 +215,21 @@ config FAIL_MAKE_REQUEST
 	help
 	  Provide fault-injection capability for disk IO.
 
+config BLK_ERROR_INJECT_BPF
+	bool "Programmable per-disk error injection via BPF struct_ops"
+	depends on FAIL_MAKE_REQUEST && BPF_SYSCALL && BPF_JIT
+	help
+	  Allow a BPF struct_ops program to provide the error-injection policy
+	  for a single disk.  The program attaches to one gendisk by its
+	  whole-disk dev_t, inspects each bio that reaches the error-injection
+	  path and may fail it by calling the bpf_bio_inject_error() kfunc; the
+	  kernel owns the completion.  This reuses the FAIL_MAKE_REQUEST per-disk
+	  arming via BD_MAKE_IT_FAIL, so the disk must be armed (through the
+	  make-it-fail sysfs attribute or a debugfs rule) before the program's
+	  policy takes effect.
+
+	  If unsure, say N.
+
 source "block/partitions/Kconfig"
 
 config BLK_PM

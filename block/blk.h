@@ -793,4 +793,29 @@ static inline bool blk_error_inject(struct bio *bio)
 	return false;
 }
 
+bool blk_status_is_valid(blk_status_t status);
+
+#ifdef CONFIG_BLK_ERROR_INJECT_BPF
+#include <linux/jump_label.h>
+DECLARE_STATIC_KEY_FALSE(blk_error_inject_bpf_enabled);
+bool __blk_error_inject_bpf(struct bio *bio);
+
+/*
+ * Hot-path gate.  The static key is held while at least one program is
+ * attached to any disk; __blk_error_inject_bpf() then dereferences the
+ * per-disk program and, if it recorded an error, completes the bio.
+ */
+static inline bool blk_error_inject_bpf(struct bio *bio)
+{
+	if (static_branch_unlikely(&blk_error_inject_bpf_enabled))
+		return __blk_error_inject_bpf(bio);
+	return false;
+}
+#else
+static inline bool blk_error_inject_bpf(struct bio *bio)
+{
+	return false;
+}
+#endif
+
 #endif /* BLK_INTERNAL_H */

@@ -44,6 +44,7 @@ struct blk_report_zones_args;
 struct blk_queue_stats;
 struct blk_stat_callback;
 struct blk_crypto_profile;
+struct blk_error_inject_ops;
 
 extern const struct device_type disk_type;
 extern const struct device_type part_type;
@@ -230,6 +231,9 @@ struct gendisk {
 #ifdef CONFIG_FAIL_MAKE_REQUEST
 	struct mutex		error_injection_lock;
 	struct list_head	error_injection_list;
+#endif
+#ifdef CONFIG_BLK_ERROR_INJECT_BPF
+	struct blk_error_inject_ops __rcu *bpf_error_inject;
 #endif
 
 	struct mutex rqos_state_mutex;	/* rqos state change mutex */
