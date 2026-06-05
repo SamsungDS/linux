@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: GPL-2.0
+vmlinux.h
+blk_error_inject.bpf.o
+blk_error_inject.skel.h
+blk_error_inject_loader
