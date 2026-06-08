@@ -1424,6 +1424,8 @@ static void nvme_cdq_free(struct nvme_ctrl *ctrl, struct cdq_nvme_queue *cdq)
 {
 	dma_free_coherent(ctrl->dev, cdq->entry_nr * cdq->entry_nbyte,
 			  cdq->entries, cdq->entries_dma_addr);
+	if (cdq->tpt_efd_ctx)
+		eventfd_ctx_put(cdq->tpt_efd_ctx);
 	kfree(cdq);
 }
 
@@ -1436,6 +1438,32 @@ static int nvme_cdq_del_submit(struct nvme_ctrl *ctrl, const u16 cdq_id)
 	};
 
 	return __nvme_submit_sync_cmd(ctrl->admin_q, &c, NULL, NULL, 0, NVME_QID_ANY, 0);
+}
+
+
+int nvme_cdq_set_tpt(struct nvme_ctrl *ctrl, const u16 cdq_id,
+		     const int event_fd, const u32 tpt_offset)
+{
+	struct cdq_nvme_queue *cdq;
+
+	cdq = xa_load(&ctrl->cdqs, cdq_id);
+	if (xa_is_err(cdq))
+		return -EINVAL;
+
+	if (cdq->entry_nr < tpt_offset)
+		return -EINVAL;
+
+	if (event_fd < 0)
+		return -EINVAL;
+
+	if (cdq->tpt_efd_ctx)
+		eventfd_ctx_put(cdq->tpt_efd_ctx);
+
+	cdq->tpt_efd_ctx = eventfd_ctx_fdget(event_fd);
+	if (IS_ERR(cdq->tpt_efd_ctx))
+		return -EINVAL;
+
+	return nvme_cdq_send_feature_id(cdq, tpt_offset);
 }
 
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
@@ -1530,6 +1558,7 @@ static int nvme_cdq_handle_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
 
 	//kill_fasync(&cdq->fasync, SIGIO, POLL_IN);
 	printk("AEN tpevent caught on CDQ id %d\n", cdq->cdq_id);
+	eventfd_signal(cdq->tpt_efd_ctx);
 
 	return true;
 }

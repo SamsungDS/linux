@@ -567,6 +567,7 @@ struct cdq_nvme_queue {
 	u16 cdq_id;
 	struct file *filep;
 	struct fasync_struct *fasync;
+	struct eventfd_ctx *tpt_efd_ctx;
 };
 
 struct nvme_ctrl_ops {
@@ -1208,6 +1209,8 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode);
 int nvme_execute_rq(struct request *rq, bool at_head);
 void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status);
+int nvme_cdq_set_tpt(struct nvme_ctrl *ctrl, u16 cdq_id, int event_fd,
+		     u32 tpt_offset);
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
 		    const u32 entry_nr, const u32 entry_nbyte,
 		    uint cdqp_offset, uint cdqp_mask,
