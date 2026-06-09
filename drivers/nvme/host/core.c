@@ -1229,54 +1229,141 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
-/* Returns true if curr_entry forwarded by 1 */
+/* Returns true if curr_host_entry forwarded by 1 */
 static bool nvme_cdq_next(struct cdq_nvme_queue *cdq)
 {
-	void *curr_entry = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
-	u8 phase_bit = (*(u8 *)(curr_entry + cdq->cdqp_offset) & cdq->cdqp_mask);
+	void *entry = cdq->entries + (cdq->curr_host_entry * cdq->entry_nbyte);
+	u8 phase_bit = (*(u8 *)(entry + cdq->cdqp_offset) & cdq->cdqp_mask);
 	/* if different, then its new! */
 	if (phase_bit != cdq->curr_cdqp) {
-		cdq->curr_entry = (cdq->curr_entry + 1) % cdq->entry_nr;
-		if (unlikely(cdq->curr_entry == 0))
+		cdq->curr_host_entry = (cdq->curr_host_entry + 1) % cdq->entry_nr;
+		if (unlikely(cdq->curr_host_entry == 0))
 			cdq->curr_cdqp = ~cdq->curr_cdqp & cdq->cdqp_mask;
 		return true;
 	}
 	return false;
 }
 
+static void nvme_cdq_submit_feat(struct cdq_nvme_queue *cdq);
+
 /*
- * nvme_cdq_send_feature_id: update the cdq head on the controller side
+ * Completion of a set-feature that advanced the controller-side head. Runs in
+ * the block-layer completion context (may be IRQ), so it must not sleep.
  *
- * @cdq:        Send an update for the head of this CDQ
- * @tpt_offset  Tail pointer trigger (TPT) offset. Set the TPT in the feature
- *              id command to tpt_offset entries after the current entry.
- *              Ignored if zero.
+ * Records the head we just acked into curr_cntl_entry, releases the in-flight
+ * slot, and re-arms one more send if the host consumed further while we were in
+ * flight (coalescing: only the newest head is ever sent). On teardown it hands
+ * the slot back to nvme_cdq_delete() via feat_drained instead of re-arming.
  */
-static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq, u32 tpt_offset)
+static enum rq_end_io_ret nvme_cdq_feat_end_io(struct request *rq, blk_status_t status)
+{
+	struct cdq_nvme_queue *cdq = rq->end_io_data;
+	unsigned long flags;
+	bool rearm = false;
+
+	WRITE_ONCE(cdq->curr_cntl_entry, cdq->inflight_head);
+	blk_mq_free_request(rq);
+
+	spin_lock_irqsave(&cdq->feat_lock, flags);
+	cdq->feat_inflight = false;
+	if (cdq->feat_dying) {
+		/* nvme_cdq_delete() is waiting on us; do not touch cdq after. */
+		spin_unlock_irqrestore(&cdq->feat_lock, flags);
+		complete(&cdq->feat_drained);
+		return RQ_END_IO_NONE;
+	}
+	/* curr_cntl_entry was just written above, plain read under the lock. */
+	if (READ_ONCE(cdq->curr_host_entry) != cdq->curr_cntl_entry) {
+		cdq->feat_inflight = true;
+		rearm = true;
+	}
+	spin_unlock_irqrestore(&cdq->feat_lock, flags);
+
+	if (rearm)
+		nvme_cdq_submit_feat(cdq);
+
+	return RQ_END_IO_NONE;
+}
+
+/*
+ * Build and asynchronously submit a set-feature that tells the controller the
+ * current host head (curr_host_entry). The caller must already own the
+ * in-flight slot (feat_inflight == true). Fire-and-forget: the read path is not
+ * blocked on the admin round-trip; nvme_cdq_feat_end_io() handles completion.
+ */
+static void nvme_cdq_submit_feat(struct cdq_nvme_queue *cdq)
 {
 	struct nvme_command c = { };
+	struct request *rq;
+	unsigned long flags;
+	u32 head = READ_ONCE(cdq->curr_host_entry);
+	u32 tpt = READ_ONCE(cdq->pending_tpt);
 	u32 dword11 = cdq->cdq_id & NVME_FEAT_CDQ_ID_MASK;
 
 	c.features.opcode = nvme_admin_set_features;
 	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
 
-	if (unlikely(tpt_offset != 0)) {
+	if (unlikely(tpt != 0)) {
 		/*
 		 * FIXME: There is a small chance that the sent tpt will have
-		 * already been handled when nvme_submit_sync_cmd returns.
-		 * If we find this to be true in the CDQ, we need to send a
+		 * already been handled by the time this command completes. If
+		 * we find this to be true in the CDQ, we need to send a
 		 * subsequent feature_id to disable the tail pointer trigger.
 		 * section 5.1.25.1.23 nvme base spec.
 		 */
 		dword11 |= NVME_FEAT_CDQ_ETPT_MASK;
-		c.features.dword13 = cpu_to_le32((cdq->curr_entry + tpt_offset)
-						  % cdq->entry_nr);
+		c.features.dword13 = cpu_to_le32((head + tpt) % cdq->entry_nr);
 	}
 
 	c.features.dword11 = cpu_to_le32(dword11);
-	c.features.dword12 = cpu_to_le32(cdq->curr_entry);
+	c.features.dword12 = cpu_to_le32(head);
 
-	return nvme_submit_sync_cmd(cdq->ctrl->admin_q, &c, NULL, 0);
+	rq = blk_mq_alloc_request(cdq->ctrl->admin_q, nvme_req_op(&c),
+				  BLK_MQ_REQ_NOWAIT);
+	if (IS_ERR(rq)) {
+		/*
+		 * No admin tag right now and we cannot sleep. Drop the slot;
+		 * the next read() will re-arm. If we are tearing down, hand the
+		 * slot to the waiter instead.
+		 */
+		spin_lock_irqsave(&cdq->feat_lock, flags);
+		cdq->feat_inflight = false;
+		if (cdq->feat_dying) {
+			spin_unlock_irqrestore(&cdq->feat_lock, flags);
+			complete(&cdq->feat_drained);
+			return;
+		}
+		spin_unlock_irqrestore(&cdq->feat_lock, flags);
+		return;
+	}
+
+	cdq->inflight_head = head;
+	WRITE_ONCE(cdq->pending_tpt, 0);	/* best-effort: consumed */
+	nvme_init_request(rq, &c);
+	rq->end_io = nvme_cdq_feat_end_io;
+	rq->end_io_data = cdq;
+	blk_execute_rq_nowait(rq, false);
+}
+
+/*
+ * Request that the controller-side head be advanced to the current host head.
+ * Submits a set-feature only if none is already in flight (coalescing); a send
+ * already in flight will re-arm on completion and pick up the newest head.
+ */
+static void nvme_cdq_kick(struct cdq_nvme_queue *cdq)
+{
+	unsigned long flags;
+	bool submit = false;
+
+	spin_lock_irqsave(&cdq->feat_lock, flags);
+	if (!cdq->feat_inflight && !cdq->feat_dying) {
+		cdq->feat_inflight = true;
+		submit = true;
+	}
+	spin_unlock_irqrestore(&cdq->feat_lock, flags);
+
+	if (submit)
+		nvme_cdq_submit_feat(cdq);
 }
 
 /*
@@ -1290,12 +1377,10 @@ static int nvme_cdq_send_feature_id(struct cdq_nvme_queue *cdq, u32 tpt_offset)
 static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
 				 void *priv_data)
 {
-	int ret;
-	u32 tpt_offset = 0;
 	char __user *to_buf = priv_data;
 	size_t tx_nbyte, target_nbyte = 0;
-	size_t orig_tail_nbyte = (cdq->entry_nr - cdq->curr_entry) * cdq->entry_nbyte;
-	void *from_buf = cdq->entries + (cdq->curr_entry * cdq->entry_nbyte);
+	size_t orig_tail_nbyte = (cdq->entry_nr - cdq->curr_host_entry) * cdq->entry_nbyte;
+	void *from_buf = cdq->entries + (cdq->curr_host_entry * cdq->entry_nbyte);
 
 	while (target_nbyte < count_nbyte && nvme_cdq_next(cdq))
 		target_nbyte += cdq->entry_nbyte;
@@ -1315,11 +1400,14 @@ static size_t nvme_cdq_traverse(struct cdq_nvme_queue *cdq, size_t count_nbyte,
 	// FIXME: set it to 1 entry after current for now, needs set-able (sysfs or ioctl)
 	/* Set tail pointer trigger only when fd has fasync set*/
 	if (unlikely(cdq->fasync && target_nbyte == 0))
-		tpt_offset = 1;
+		WRITE_ONCE(cdq->pending_tpt, 1);
 
-	ret = nvme_cdq_send_feature_id(cdq, tpt_offset);
-	if (ret < 0)
-		return ret;
+	/*
+	 * Advance the controller-side head asynchronously: the set-feature send
+	 * is decoupled from this read so its admin round-trip does not delay the
+	 * data path. curr_host_entry has already been advanced by nvme_cdq_next.
+	 */
+	nvme_cdq_kick(cdq);
 
 	return target_nbyte;
 }
@@ -1415,6 +1503,9 @@ static int nvme_cdq_alloc(struct nvme_ctrl *ctrl, struct cdq_nvme_queue **cdq,
 		return -ENOMEM;
 	}
 
+	spin_lock_init(&ret_cdq->feat_lock);
+	init_completion(&ret_cdq->feat_drained);
+
 	*cdq = ret_cdq;
 
 	return 0;
@@ -1463,7 +1554,15 @@ int nvme_cdq_set_tpt(struct nvme_ctrl *ctrl, const u16 cdq_id,
 	if (IS_ERR(cdq->tpt_efd_ctx))
 		return -EINVAL;
 
-	return nvme_cdq_send_feature_id(cdq, tpt_offset);
+	/*
+	 * Arm the tail-pointer trigger on the next (coalesced) set-feature send.
+	 * The send is now asynchronous, so the controller status is no longer
+	 * returned here; the arm is best-effort and reflected via the AEN path.
+	 */
+	WRITE_ONCE(cdq->pending_tpt, tpt_offset);
+	nvme_cdq_kick(cdq);
+
+	return 0;
 }
 
 int nvme_cdq_create(struct nvme_ctrl *ctrl, struct nvme_command *c,
@@ -1523,12 +1622,26 @@ EXPORT_SYMBOL_GPL(nvme_cdq_create);
 
 int nvme_cdq_delete(struct nvme_ctrl *ctrl, const u16 cdq_id)
 {
+	unsigned long flags;
 	int ret;
 	struct cdq_nvme_queue *cdq;
 
 	cdq = xa_erase(&ctrl->cdqs, cdq_id);
 	if (!cdq)
 		return -EINVAL;
+
+	/*
+	 * Stop any further set-feature sends and wait out an in-flight one so
+	 * its completion (nvme_cdq_feat_end_io) cannot dereference cdq after we
+	 * free it. feat_dying also makes a racing nvme_cdq_kick() a no-op. The
+	 * in-flight admin command is bounded by NVME_ADMIN_TIMEOUT.
+	 */
+	spin_lock_irqsave(&cdq->feat_lock, flags);
+	cdq->feat_dying = true;
+	if (!cdq->feat_inflight)
+		complete(&cdq->feat_drained);
+	spin_unlock_irqrestore(&cdq->feat_lock, flags);
+	wait_for_completion(&cdq->feat_drained);
 
 	ret = nvme_cdq_del_submit(ctrl, cdq_id);
 	if (ret)

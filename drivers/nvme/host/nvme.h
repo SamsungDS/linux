@@ -11,6 +11,7 @@
 #include <linux/pci.h>
 #include <linux/kref.h>
 #include <linux/blk-mq.h>
+#include <linux/completion.h>
 #include <linux/sed-opal.h>
 #include <linux/fault-inject.h>
 #include <linux/rcupdate.h>
@@ -559,7 +560,19 @@ struct cdq_nvme_queue {
 	void *entries;
 	u32 entry_nbyte;
 	u32 entry_nr;
-	u32 curr_entry;
+	/*
+	 * curr_host_entry: how far the host has consumed the CDQ. Advanced by
+	 *                  the read path, single writer (reads of one fd are
+	 *                  assumed serialized). READ_ONCE/WRITE_ONCE only.
+	 * curr_cntl_entry: head value the controller has been told about.
+	 *                  Trails curr_host_entry, single writer (set-feature
+	 *                  completion). The set-feature send is decoupled from
+	 *                  the read so its admin round-trip cannot delay read().
+	 */
+	u32 curr_host_entry;
+	u32 curr_cntl_entry;
+	u32 inflight_head;	/* head carried by the in-flight set-feature */
+	u32 pending_tpt;	/* ETPT offset to arm on next send, 0 = none */
 	u8 curr_cdqp;
 	uint cdqp_offset;
 	uint cdqp_mask;
@@ -568,6 +581,16 @@ struct cdq_nvme_queue {
 	struct file *filep;
 	struct fasync_struct *fasync;
 	struct eventfd_ctx *tpt_efd_ctx;
+	/*
+	 * feat_lock serializes the "is a set-feature in flight / should we
+	 * submit or re-arm / are we tearing down" decision. Taken from the
+	 * set-feature completion (IRQ context), so all sites use _irqsave.
+	 * The head values above are deliberately kept outside this lock.
+	 */
+	spinlock_t feat_lock;
+	bool feat_inflight;
+	bool feat_dying;
+	struct completion feat_drained;
 };
 
 struct nvme_ctrl_ops {
