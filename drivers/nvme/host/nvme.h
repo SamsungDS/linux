@@ -620,6 +620,8 @@ static inline unsigned long nvme_get_virt_boundary(struct nvme_ctrl *ctrl,
 	return NVME_CTRL_PAGE_SIZE - 1;
 }
 
+#define NVME_CDQ_MQ_ENTRY_NRBYTES	32
+
 /*
  * The CDQ backing is a set of coherent DMA chunks. Chunk size expressed in
  * host pages to match dma_alloc_coherency granularity.
@@ -649,6 +651,9 @@ struct cdq_nvme_queue {
 	__le64 *prp_lists[MAX_NR_CDQ_PRPS];
 	dma_addr_t prp_lists_dma[MAX_NR_CDQ_PRPS];
 	unsigned int nr_prp_lists;
+
+	/* Manage refs for read FD and controller xarray */
+	struct kref ref;
 };
 
 static inline void nvme_free_cdqmem_chunks(struct cdq_nvme_queue *cdq)
@@ -774,6 +779,9 @@ static inline int nvme_create_cdq_backing(struct cdq_nvme_queue *cdq)
 			goto err_chunks;
 	}
 
+	/* FIXME: put this on the create_cdq function*/
+	kref_init(&cdq->ref);
+
 	return 0;
 
 err_chunks:
@@ -787,6 +795,22 @@ static inline void nvme_release_cdq_backing(struct cdq_nvme_queue *cdq)
 {
 	nvme_free_cdqmem_prp_lists(cdq);
 	nvme_free_cdqmem_chunks(cdq);
+}
+
+/* Must not touch cdq->ctrl: Ctrl may have been freed */
+static inline void nvme_cdq_free(struct kref *ref)
+{
+	kfree(container_of(ref, struct cdq_nvme_queue, ref));
+}
+
+static inline void nvme_cdq_get(struct cdq_nvme_queue *cdq)
+{
+	kref_get(&cdq->ref);
+}
+
+static inline void nvme_cdq_put(struct cdq_nvme_queue *cdq)
+{
+	kref_put(&cdq->ref, nvme_cdq_free);
 }
 
 void nvme_delete_cdq(struct cdq_nvme_queue *cdq);

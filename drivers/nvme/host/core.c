@@ -23,6 +23,7 @@
 #include <linux/pm_qos.h>
 #include <linux/ratelimit.h>
 #include <linux/unaligned.h>
+#include <linux/anon_inodes.h>
 
 #include "nvme.h"
 #include "fabrics.h"
@@ -1252,6 +1253,69 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 	return effects;
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
+
+static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
+				  size_t size_nbyte, loff_t *ppos)
+{
+	struct cdq_nvme_queue *cdq = filep->private_data;
+	size_t nbytes = round_down(size_nbyte, NVME_CDQ_MQ_ENTRY_NRBYTES);
+
+	if (*ppos)
+		return -ESPIPE;
+
+	if (size_nbyte < NVME_CDQ_MQ_ENTRY_NRBYTES)
+		return -EINVAL;
+
+	if (nbytes > (cdq->size_nbyte))
+		return -EINVAL;
+
+	/* CDQ traversal not implemented yet. */
+	return -EOPNOTSUPP;
+}
+
+/* File reference already dropped by the close path, so don't fput() */
+static int nvme_release_cdqfd(struct cdq_nvme_queue *cdq)
+{
+	nvme_cdq_put(cdq);
+	return 0;
+}
+
+static int nvme_cdq_fops_release(struct inode *inode, struct file *filep)
+{
+	return nvme_release_cdqfd(filep->private_data);
+}
+
+static const struct file_operations cdq_fops = {
+	.owner		= THIS_MODULE,
+	.open		= nonseekable_open,
+	.read		= nvme_cdq_fops_read,
+	.release	= nvme_cdq_fops_release,
+};
+
+__attribute__((unused))
+static int nvme_create_cdqfd(struct cdq_nvme_queue *cdq, int *cdq_fdno)
+{
+	int fdno;
+	struct file *filep;
+
+	filep = anon_inode_getfile("[cdq-readfd]", &cdq_fops, cdq, O_RDWR);
+	if (IS_ERR(filep))
+		return PTR_ERR(filep);
+
+	/* cdq is being pionted at by ->private_data. increase ref */
+	nvme_cdq_get(cdq);
+
+	fdno = get_unused_fd_flags(O_CLOEXEC | O_RDONLY | O_DIRECT);
+	if (fdno < 0) {
+		fput(filep); /* nvme_cdq_put through release */
+		return fdno;
+	}
+
+	fd_install(fdno, filep);
+	*cdq_fdno = fdno;
+
+	return 0;
+}
 
 void nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status)
@@ -2671,6 +2735,8 @@ static void nvme_delete_cdq_host(struct cdq_nvme_queue *cdq)
 		return;
 
 	nvme_release_cdq_backing(cdq);
+
+	nvme_cdq_put(cdq);
 }
 
 void nvme_delete_cdq(struct cdq_nvme_queue *cdq)
