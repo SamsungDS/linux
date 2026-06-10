@@ -2665,10 +2665,12 @@ static void nvme_delete_cdq_ctrl(struct cdq_nvme_queue *cdq)
 /* Does NOT send a CDQ delete NVMe cmd */
 static void nvme_delete_cdq_host(struct cdq_nvme_queue *cdq)
 {
-	u16 cdq_id = cdq->id;
 	struct nvme_ctrl *ctrl = cdq->ctrl;
 
-	xa_erase(&ctrl->cdqs, cdq_id);
+	if (xa_erase(&ctrl->cdqs, cdq->id) != cdq)
+		return;
+
+	nvme_release_cdq_backing(cdq);
 }
 
 void nvme_delete_cdq(struct cdq_nvme_queue *cdq)
