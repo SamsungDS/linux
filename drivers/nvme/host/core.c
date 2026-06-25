@@ -1269,6 +1269,9 @@ static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
 	if (nbytes > (cdq->size_nbyte))
 		return -EINVAL;
 
+	if (!READ_ONCE(cdq->valid_mem))
+		return -EINVAL;
+
 	/* CDQ traversal not implemented yet. */
 	return -EOPNOTSUPP;
 }
@@ -2734,8 +2737,9 @@ static void nvme_delete_cdq_host(struct cdq_nvme_queue *cdq)
 	if (xa_erase(&ctrl->cdqs, cdq->id) != cdq)
 		return;
 
-	nvme_release_cdq_backing(cdq);
+	WRITE_ONCE(cdq->valid_mem, false);
 
+	nvme_release_cdq_backing(cdq);
 	nvme_cdq_put(cdq);
 }
 
@@ -5235,6 +5239,8 @@ int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id)
 	ret = nvme_submit_create_cdq_cmd(cdq);
 	if (ret)
 		goto del_cdqmem;
+
+	WRITE_ONCE(cdq->valid_mem, true);
 
 	ret = xa_insert(&cdq->ctrl->cdqs, cdq->id, cdq, GFP_KERNEL);
 	if (ret)

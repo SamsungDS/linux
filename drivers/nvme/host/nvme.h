@@ -653,6 +653,21 @@ struct cdq_nvme_queue {
 	dma_addr_t prp_lists_dma[MAX_NR_CDQ_PRPS];
 	unsigned int nr_prp_lists;
 
+	/* True if mem for chunks and prps is valid */
+	bool valid_mem;
+
+	/*
+	 * feat_lock serializes the "is a set-feature in flight / submit or
+	 * re-arm / are we tearing down" decision. Taken from the set-feature
+	 * completion (IRQ context), so all sites use _irqsave. The head values
+	 * above are deliberately kept outside this lock (single-writer, accessed
+	 * with READ_ONCE/WRITE_ONCE).
+	 */
+	spinlock_t feat_lock;
+	bool feat_inflight;
+	bool feat_dying;
+	struct completion feat_drained;
+
 	/* Manage refs for read FD and controller xarray */
 	struct kref ref;
 };
