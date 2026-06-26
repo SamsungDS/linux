@@ -621,13 +621,17 @@ static inline unsigned long nvme_get_virt_boundary(struct nvme_ctrl *ctrl,
 }
 
 #define NVME_CDQ_MQ_ENTRY_NRBYTES	32
+#define NVME_CDQ_MQ_PHASE_MASK		0x1
+#define NVME_CDQ_MQ_PHASE_OFFSET	(NVME_CDQ_MQ_ENTRY_NRBYTES - 1)
 
 /*
  * The CDQ backing is a set of coherent DMA chunks expressed in
  * host pages to match dma_alloc_coherency granularity.
  */
-#define NVME_CDQ_CHUNK_ORDER	2
-#define NVME_CDQ_CHUNK_SIZE	(PAGE_SIZE << NVME_CDQ_CHUNK_ORDER)
+#define NVME_CDQ_CHUNK_ORDER		2
+#define NVME_CDQ_CHUNK_SIZE		(PAGE_SIZE << NVME_CDQ_CHUNK_ORDER)
+#define NVME_CDQ_PAGES_PER_CHUNK	(NVME_CDQ_CHUNK_SIZE / NVME_CTRL_PAGE_SIZE)
+#define NVME_CDQ_MQ_ENTRY_PER_CHUNK	(NVME_CDQ_CHUNK_SIZE / NVME_CDQ_MQ_ENTRY_NRBYTES)
 
 /* Max PRP List pages we are willing to chain to describe a discontiguous CDQ. */
 #define MAX_NR_CDQ_PRPS		20
@@ -655,6 +659,19 @@ struct cdq_nvme_queue {
 
 	/* True if mem for chunks and prps is valid */
 	bool valid_mem;
+
+	/*
+	 * CDQ entry state
+	 * host_head: How far the CDQ was consumed by the host
+	 * cntl_head: Last acked (by the controller) CDQ head update.
+	 *            Trails host_head.
+	 * sent_head: Value sent by the in-flight set-feature cmd
+	 *            Differs from cntl_head until set-feature cmd completes
+	 */
+	u32 host_head;
+	u32 cntl_head;
+	u32 sent_head;
+	u8 phase_bit;
 
 	/*
 	 * feat_lock serializes the "is a set-feature in flight / submit or
@@ -724,12 +741,24 @@ static inline void nvme_free_cdqmem_prp_lists(struct cdq_nvme_queue *cdq)
 	cdq->nr_prp_lists = 0;
 }
 
+static inline dma_addr_t nvme_get_cdq_pagedma(struct cdq_nvme_queue *cdq,
+					      unsigned int page_idx)
+{
+	return cdq->chunks[page_idx / NVME_CDQ_PAGES_PER_CHUNK].dma_addr +
+		(page_idx % NVME_CDQ_PAGES_PER_CHUNK) * NVME_CTRL_PAGE_SIZE;
+}
+
+static inline void *nvme_get_cdq_entryvaddr(struct cdq_nvme_queue *cdq,
+					    unsigned int entry_idx)
+{
+	return cdq->chunks[entry_idx / NVME_CDQ_MQ_ENTRY_PER_CHUNK].vaddr +
+		(entry_idx % NVME_CDQ_MQ_ENTRY_PER_CHUNK) * NVME_CDQ_MQ_ENTRY_NRBYTES;
+}
+
 static inline int nvme_build_cdqmem_prp_list(struct cdq_nvme_queue *cdq)
 {
 	struct device *dev = cdq->ctrl->dev;
 	const unsigned int prps_per_page = PAGE_SIZE >> 3;
-	const unsigned int pages_per_chunk =
-		NVME_CDQ_CHUNK_SIZE / NVME_CTRL_PAGE_SIZE;
 	unsigned int total_pages =
 		DIV_ROUND_UP(cdq->size_nbyte, NVME_CTRL_PAGE_SIZE);
 	dma_addr_t prp_list_dma;
@@ -744,8 +773,7 @@ static inline int nvme_build_cdqmem_prp_list(struct cdq_nvme_queue *cdq)
 	cdq->nr_prp_lists = 1;
 
 	for (page_idx = 0, prp_idx = 0; page_idx < total_pages; page_idx++) {
-		dma_addr_t page_dma = cdq->chunks[page_idx / pages_per_chunk].dma_addr +
-			(page_idx % pages_per_chunk) * NVME_CTRL_PAGE_SIZE;
+		dma_addr_t page_dma = nvme_get_cdq_pagedma(cdq, page_idx);
 
 		/* Current prp_list page full with entries still to place: chain. */
 		if (prp_idx == prps_per_page) {
