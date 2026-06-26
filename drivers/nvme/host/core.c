@@ -1295,7 +1295,16 @@ static const struct file_operations cdq_fops = {
 	.release	= nvme_cdq_fops_release,
 };
 
-__attribute__((unused))
+/* Should only handle cdq struct and ctrl kref */
+void nvme_cdq_free(struct kref *ref)
+{
+	struct cdq_nvme_queue *cdq = container_of(ref, struct cdq_nvme_queue, ref);
+
+	/* Drop the ctrl kref held since creation */
+	nvme_put_ctrl(cdq->ctrl);
+	kfree(cdq);
+}
+
 static int nvme_create_cdqfd(struct cdq_nvme_queue *cdq, int *cdq_fdno)
 {
 	int fdno;
@@ -5235,6 +5244,12 @@ int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id)
 	}
 
 	kref_init(&cdq->ref);
+
+	/*
+	 * Pin the controller for the CDQ's lifetime.
+	 *    - pined until all the CDQ FDs (for that ctrl) are closed
+	 */
+	nvme_get_ctrl(cdq->ctrl);
 
 	ret = nvme_submit_create_cdq_cmd(cdq);
 	if (ret)
