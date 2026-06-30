@@ -1540,7 +1540,7 @@ static void nvme_put_cdq_tpt(struct cdq_nvme_queue *cdq)
 
 static int nvme_get_cdq_tpt(struct cdq_nvme_queue *cdq, const int tpt_fd)
 {
-	if (tpt_fd < 0)
+	if (tpt_fd <= 0)
 		return 0;
 
 	/* put the old one */
@@ -2997,6 +2997,28 @@ void nvme_delete_cdq(struct cdq_nvme_queue *cdq)
 	nvme_delete_cdq_host(cdq);
 }
 EXPORT_SYMBOL_GPL(nvme_delete_cdq);
+
+/*
+ * Find the controller CDQ created for @mc_id and delete it (sends the NVMe
+ * delete cmd and tears down host state). The design keeps at most one CDQ per
+ * migratable controller, so the first match is the target. Returns -ENOENT when
+ * no CDQ matches @mc_id.
+ */
+int nvme_delete_cdq_mcid(struct nvme_ctrl *ctrl, u16 mc_id)
+{
+	struct cdq_nvme_queue *cdq;
+	unsigned long i;
+
+	xa_for_each(&ctrl->cdqs, i, cdq) {
+		if (cdq->mc_id == mc_id) {
+			nvme_delete_cdq(cdq);
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+EXPORT_SYMBOL_GPL(nvme_delete_cdq_mcid);
 
 
 static void nvme_delete_cdqs_host(struct nvme_ctrl *ctrl);
@@ -5475,11 +5497,12 @@ static int nvme_submit_create_cdq_cmd(struct cdq_nvme_queue *cdq)
 	return ret;
 }
 
-int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id, const int tpt_fd)
+int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id,
+		    const int tpt_fd, int *cdq_fd)
 {
 	u64 size_nbyte = (u64)entry_nr * NVME_CDQ_MQ_ENTRY_NRBYTES;
 	struct cdq_nvme_queue *cdq = NULL;
-	int ret, cdq_fd;
+	int ret;
 
 	/* The backing size and the CDQSIZE field are both u32 (bytes). */
 	if (size_nbyte > U32_MAX)
@@ -5523,7 +5546,7 @@ int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id,
 	if (ret)
 		goto del_cmd;
 
-	ret = nvme_create_cdqfd(cdq, &cdq_fd);
+	ret = nvme_create_cdqfd(cdq, cdq_fd);
 	if (ret)
 		goto del_xarray;
 
