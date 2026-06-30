@@ -672,6 +672,7 @@ struct cdq_nvme_queue {
 	u32 host_head;
 	u32 cntl_head;
 	u32 sent_head;
+	u32 pending_tpt;	/* ETPT offset to arm on next set-feature send, 0 = none */
 	u8 phase_bit;
 
 	/*
@@ -688,6 +689,9 @@ struct cdq_nvme_queue {
 
 	/* Manage refs for read FD and controller xarray */
 	struct kref ref;
+
+	/* Has a value if user setup an event fd for AEN tpt events */
+	struct eventfd_ctx *tpt_efd_ctx;
 };
 
 static inline void nvme_free_cdqmem_chunks(struct cdq_nvme_queue *cdq)
@@ -851,7 +855,7 @@ static inline void nvme_release_cdq_backing(struct cdq_nvme_queue *cdq)
  */
 void nvme_cdq_free(struct kref *ref);
 void nvme_delete_cdq(struct cdq_nvme_queue *cdq);
-int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id);
+int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id, int tpt_fd);
 
 static inline void nvme_cdq_get(struct cdq_nvme_queue *cdq)
 {

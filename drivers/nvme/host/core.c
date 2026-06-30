@@ -1333,10 +1333,26 @@ static void nvme_cdq_submit_feat(struct cdq_nvme_queue *cdq)
 	struct request *rq;
 	unsigned long flags;
 	u32 head = READ_ONCE(cdq->host_head);
+	u32 tpt = READ_ONCE(cdq->pending_tpt);
+	u32 dword11 = cdq->id & NVME_FEAT_CDQ_ID_MASK;
+	u32 cdq_nrentry = cdq->size_nbyte / NVME_CDQ_MQ_ENTRY_NRBYTES;
 
 	c.features.opcode = nvme_admin_set_features;
 	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
-	c.features.dword11 = cpu_to_le32(cdq->id & NVME_FEAT_CDQ_ID_MASK);
+
+	if (unlikely(tpt != 0)) {
+		/*
+		 * FIXME: There is a small chance that the sent tpt will have
+		 * already been handled by the time this command completes. If
+		 * we find this to be true in the CDQ, we need to send a
+		 * subsequent feature_id to disable the tail pointer trigger.
+		 * section 5.1.25.1.23 nvme base spec.
+		 */
+		dword11 |= NVME_FEAT_CDQ_ETPT_MASK;
+		c.features.dword13 = cpu_to_le32((head + tpt) % cdq_nrentry);
+	}
+
+	c.features.dword11 = cpu_to_le32(dword11);
 	c.features.dword12 = cpu_to_le32(head);
 
 	rq = blk_mq_alloc_request(cdq->ctrl->admin_q, nvme_req_op(&c),
@@ -1359,6 +1375,7 @@ static void nvme_cdq_submit_feat(struct cdq_nvme_queue *cdq)
 	}
 
 	cdq->sent_head = head;
+	WRITE_ONCE(cdq->pending_tpt, 0);	/* best-effort: consumed */
 	nvme_init_request(rq, &c);
 	rq->end_io = nvme_cdq_feat_end_io;
 	rq->end_io_data = cdq;
@@ -1420,8 +1437,18 @@ out:
 	 * can move up. Decoupled from this read: the set-feature admin
 	 * round-trip must not delay the data path.
 	 */
-	if (copied_nbyte)
+	if (copied_nbyte) {
 		nvme_cdq_kick(cdq);
+	} else if (cdq->tpt_efd_ctx) {
+		/*
+		 * Queue drained and the user armed a tpt eventfd: arm the
+		 * tail-pointer trigger so the controller raises a one-shot AEN
+		 * (NVME_AER_ONE_SHOT_CDQ_TAIL_PTR) when the tail next advances.
+		 * Offset 1 triggers on the next entry; re-armed on each empty read.
+		 */
+		WRITE_ONCE(cdq->pending_tpt, 1);
+		nvme_cdq_kick(cdq);
+	}
 	return copied_nbyte;
 
 err_out:
@@ -1500,6 +1527,28 @@ static int nvme_create_cdqfd(struct cdq_nvme_queue *cdq, int *cdq_fdno)
 
 	fd_install(fdno, filep);
 	*cdq_fdno = fdno;
+
+	return 0;
+}
+
+static void nvme_put_cdq_tpt(struct cdq_nvme_queue *cdq)
+{
+	if (cdq->tpt_efd_ctx)
+		eventfd_ctx_put(cdq->tpt_efd_ctx);
+	cdq->tpt_efd_ctx = NULL;
+}
+
+static int nvme_get_cdq_tpt(struct cdq_nvme_queue *cdq, const int tpt_fd)
+{
+	if (tpt_fd < 0)
+		return 0;
+
+	/* put the old one */
+	nvme_put_cdq_tpt(cdq);
+
+	cdq->tpt_efd_ctx = eventfd_ctx_fdget(tpt_fd);
+	if (IS_ERR(cdq->tpt_efd_ctx))
+		return -EINVAL;
 
 	return 0;
 }
@@ -2935,6 +2984,8 @@ static void nvme_delete_cdq_host(struct cdq_nvme_queue *cdq)
 	wait_for_completion(&cdq->feat_drained);
 
 	WRITE_ONCE(cdq->valid_mem, false);
+
+	nvme_put_cdq_tpt(cdq);
 
 	nvme_release_cdq_backing(cdq);
 	nvme_cdq_put(cdq);
@@ -5063,13 +5114,30 @@ static u32 nvme_aer_subtype(u32 result)
 	return (result & 0xff00) >> 8;
 }
 
+static int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
+{
+	u16 cdq_id = event_param & NVME_FEAT_CDQ_ID_MASK;
+	struct cdq_nvme_queue *cdq;
+
+	cdq = xa_load(&ctrl->cdqs, cdq_id);
+	if (xa_is_err(cdq))
+		return xa_err(cdq);
+	if (!cdq->tpt_efd_ctx)
+		return -EINVAL;
+
+	eventfd_signal(cdq->tpt_efd_ctx);
+
+	return 0;
+}
+
 static bool nvme_handle_aen_oneshot(struct nvme_ctrl *ctrl, u32 result, u32 event_param)
 {
 	u32 aer_subtype = nvme_aer_subtype(result);
 
 	switch (aer_subtype) {
 	case NVME_AER_ONE_SHOT_CDQ_TAIL_PTR:
-		WARN_ONCE(1, "CDQ Tail Pointer one shot event ignored");
+		if (nvme_handle_cdq_aen_tpevent(ctrl, event_param))
+			WARN_ONCE(1, "Error handling CDQ AEN oneshot");
 		break;
 	case NVME_AER_ONE_SHOT_CDQ_FULL:
 		WARN_ONCE(1, "CDQ Full Error one shot event ignored");
@@ -5407,7 +5475,7 @@ static int nvme_submit_create_cdq_cmd(struct cdq_nvme_queue *cdq)
 	return ret;
 }
 
-int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id)
+int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id, const int tpt_fd)
 {
 	u64 size_nbyte = (u64)entry_nr * NVME_CDQ_MQ_ENTRY_NRBYTES;
 	struct cdq_nvme_queue *cdq = NULL;
@@ -5441,9 +5509,13 @@ int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id)
 	 */
 	nvme_get_ctrl(cdq->ctrl);
 
-	ret = nvme_submit_create_cdq_cmd(cdq);
+	ret = nvme_get_cdq_tpt(cdq, tpt_fd);
 	if (ret)
 		goto del_cdqmem;
+
+	ret = nvme_submit_create_cdq_cmd(cdq);
+	if (ret)
+		goto put_tpt;
 
 	WRITE_ONCE(cdq->valid_mem, true);
 
@@ -5464,6 +5536,9 @@ del_xarray:
 del_cmd:
 	if (nvme_submit_delete_cdq_cmd(cdq))
 		WARN_ONCE(1, "Failed delete CDQ (id: %d)", cdq->id);
+
+put_tpt:
+	nvme_put_cdq_tpt(cdq);
 
 del_cdqmem:
 	/* puts the ref acquired by kref_init */
