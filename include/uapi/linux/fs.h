@@ -345,6 +345,22 @@ struct file_attr {
 /* Get logical block metadata capability details */
 #define FS_IOC_GETLBMD_CAP		_IOWR(0x15, 2, struct logical_block_metadata_cap)
 
+struct fs_write_stream_open {
+	__u32		stream_id;	/* IN: requested id if OPEN_EXACT set; OUT: assigned id */
+	__u32		flags;		/* IN: FS_WRITE_STREAM_OPEN_* */
+};
+
+/*
+ * Flag to ask for specific stream_id, otherwise kernel can return any.
+ * Fails with -EBUSY if that stream_id is already held
+ */
+#define FS_WRITE_STREAM_OPEN_EXACT	(1 << 0)
+
+#define FS_IOC_WRITE_STREAM_GET_MAX	_IOR('f', 135, __u32)
+#define FS_IOC_WRITE_STREAM_OPEN	_IOWR('f', 136, struct fs_write_stream_open)
+#define FS_IOC_WRITE_STREAM_SET		_IOW('f', 137, __s32)
+#define FS_IOC_WRITE_STREAM_GET		_IOR('f', 138, __u32)
+
 /*
  * Inode flags (FS_IOC_GETFLAGS / FS_IOC_SETFLAGS)
  *
