@@ -45,6 +45,8 @@ enum {
 
 #define XFS_ERR_RETRY_FOREVER	-1
 
+#define XFS_SW_WRITE_STREAMS_MAX	16
+
 /*
  * Although retry_timeout is in jiffies which is normally an unsigned long,
  * we limit the retry timeout to 86400 seconds, or one day.  So even a

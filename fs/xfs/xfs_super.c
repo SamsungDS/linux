@@ -1711,12 +1711,12 @@ xfs_fs_fill_super(
 		return error;
 
 	nr_streams = bdev_max_write_streams(mp->m_ddev_targp->bt_bdev);
-	if (nr_streams) {
-		mp->m_streams_in_use = bitmap_zalloc(nr_streams, GFP_KERNEL);
-		if (!mp->m_streams_in_use) {
-			error = -ENOMEM;
-			goto out_shutdown_devices;
-		}
+	if (!nr_streams)
+		nr_streams = XFS_SW_WRITE_STREAMS_MAX;
+	mp->m_streams_in_use = bitmap_zalloc(nr_streams, GFP_KERNEL);
+	if (!mp->m_streams_in_use) {
+		error = -ENOMEM;
+		goto out_shutdown_devices;
 	}
 
 	if (xfs_debugfs) {
