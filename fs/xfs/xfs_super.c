@@ -805,6 +805,7 @@ xfs_mount_free(
 #ifdef DEBUG
 	kfree(mp->m_errortag);
 #endif
+	bitmap_free(mp->m_streams_in_use);
 	kfree(mp);
 }
 
@@ -1659,6 +1660,7 @@ xfs_fs_fill_super(
 	struct xfs_mount	*mp = sb->s_fs_info;
 	struct inode		*root;
 	int			flags = 0, error;
+	int			nr_streams;
 
 	mp->m_super = sb;
 
@@ -1707,6 +1709,15 @@ xfs_fs_fill_super(
 	error = xfs_open_devices(mp);
 	if (error)
 		return error;
+
+	nr_streams = bdev_max_write_streams(mp->m_ddev_targp->bt_bdev);
+	if (nr_streams) {
+		mp->m_streams_in_use = bitmap_zalloc(nr_streams, GFP_KERNEL);
+		if (!mp->m_streams_in_use) {
+			error = -ENOMEM;
+			goto out_shutdown_devices;
+		}
+	}
 
 	if (xfs_debugfs) {
 		mp->m_debugfs = xfs_debugfs_mkdir(mp->m_super->s_id,
@@ -2249,6 +2260,7 @@ xfs_init_fs_context(
 #endif
 
 	spin_lock_init(&mp->m_sb_lock);
+	spin_lock_init(&mp->m_streams_lock);
 	for (i = 0; i < XG_TYPE_MAX; i++)
 		xa_init(&mp->m_groups[i].xa);
 	mutex_init(&mp->m_growlock);

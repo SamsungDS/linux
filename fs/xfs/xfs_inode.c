@@ -4,6 +4,7 @@
  * All Rights Reserved.
  */
 #include <linux/iversion.h>
+#include <linux/anon_inodes.h>
 
 #include "xfs_platform.h"
 #include "xfs_fs.h"
@@ -46,6 +47,160 @@
 #include "xfs_metafile.h"
 
 struct kmem_cache *xfs_inode_cache;
+
+int
+xfs_inode_max_write_streams(
+	struct xfs_inode	*ip)
+{
+	struct block_device	*bdev;
+	bool			is_filestream, is_realtime;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	is_filestream = xfs_inode_is_filestream(ip);
+	is_realtime = XFS_IS_REALTIME_INODE(ip);
+	bdev = xfs_inode_buftarg(ip)->bt_bdev;
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+
+	if (!bdev || is_filestream || is_realtime)
+		return 0;
+
+	return bdev_max_write_streams(bdev);
+}
+
+uint16_t
+xfs_inode_get_write_stream(
+	struct xfs_inode	*ip)
+{
+	uint16_t	stream_id;
+
+	xfs_ilock(ip, XFS_ILOCK_SHARED);
+	stream_id = ip->i_write_stream;
+	xfs_iunlock(ip, XFS_ILOCK_SHARED);
+
+	return stream_id;
+}
+
+struct xfs_write_stream {
+	struct xfs_mount	*mp;
+	uint16_t		stream_id;	/* 1-based */
+};
+
+static int
+xfs_write_stream_release(
+	struct inode		*inode,
+	struct file		*file)
+{
+	struct xfs_write_stream	*ws = file->private_data;
+	struct xfs_mount	*mp = ws->mp;
+
+	spin_lock(&mp->m_streams_lock);
+	clear_bit(ws->stream_id - 1, mp->m_streams_in_use);
+	spin_unlock(&mp->m_streams_lock);
+	kfree(ws);
+	return 0;
+}
+
+static const struct file_operations xfs_write_stream_fops = {
+	.release	= xfs_write_stream_release,
+	.llseek		= noop_llseek,
+};
+
+int
+xfs_inode_write_stream_open(
+	struct xfs_inode	*ip,
+	u32			flags,
+	u32			*stream_idp)
+{
+	struct xfs_mount	*mp = ip->i_mount;
+	struct xfs_write_stream	*ws;
+	int			max, slot, fd, ret;
+
+	if (flags & ~FS_WRITE_STREAM_OPEN_EXACT)
+		return -EINVAL;
+
+	max = xfs_inode_max_write_streams(ip);
+	if (!max)
+		return -EOPNOTSUPP;
+	ASSERT(mp->m_streams_in_use);
+
+	ws = kmalloc(sizeof(*ws), GFP_KERNEL);
+	if (!ws)
+		return -ENOMEM;
+
+	spin_lock(&mp->m_streams_lock);
+	if (flags & FS_WRITE_STREAM_OPEN_EXACT) {
+		if (!*stream_idp || *stream_idp > max) {
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		slot = *stream_idp - 1;
+		if (test_bit(slot, mp->m_streams_in_use)) {
+			ret = -EBUSY;
+			goto out_unlock;
+		}
+	} else {
+		slot = find_first_zero_bit(mp->m_streams_in_use, max);
+		if (slot >= max) {
+			ret = -EBUSY;
+			goto out_unlock;
+		}
+	}
+	set_bit(slot, mp->m_streams_in_use);
+	spin_unlock(&mp->m_streams_lock);
+
+	ws->mp = mp;
+	ws->stream_id = slot + 1;	/* convert to 1-based */
+
+	fd = anon_inode_getfd("[xfs_write_stream]", &xfs_write_stream_fops, ws,
+			      O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		spin_lock(&mp->m_streams_lock);
+		clear_bit(slot, mp->m_streams_in_use);
+		spin_unlock(&mp->m_streams_lock);
+		kfree(ws);
+		return fd;
+	}
+
+	*stream_idp = ws->stream_id;
+	return fd;
+
+out_unlock:
+	spin_unlock(&mp->m_streams_lock);
+	kfree(ws);
+	return ret;
+}
+
+int
+xfs_inode_set_write_stream(
+	struct xfs_inode	*ip,
+	int			stream_fd)
+{
+	CLASS(fd, f)(stream_fd);
+	struct xfs_write_stream	*ws;
+	int			ret = 0;
+
+	if (!fd_file(f))
+		return -EBADF;
+	if (fd_file(f)->f_op != &xfs_write_stream_fops)
+		return -EINVAL;
+
+	ws = fd_file(f)->private_data;
+	if (ws->mp != ip->i_mount)
+		return -EINVAL;
+
+	xfs_ilock(ip, XFS_ILOCK_EXCL);
+
+	if (XFS_IS_REALTIME_INODE(ip) || xfs_inode_is_filestream(ip) ||
+	    VFS_I(ip)->i_write_hint != WRITE_LIFE_NOT_SET) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	ip->i_write_stream = ws->stream_id;
+out_unlock:
+	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+	return ret;
+}
 
 /*
  * These two are wrapper routines around the xfs_ilock() routine used to

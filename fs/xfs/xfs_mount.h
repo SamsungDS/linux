@@ -349,6 +349,9 @@ typedef struct xfs_mount {
 
 	/* Index of uuid record in the uuid xarray. */
 	unsigned int		m_uuid_table_index;
+
+	unsigned long		*m_streams_in_use;
+	spinlock_t		m_streams_lock;
 } xfs_mount_t;
 
 #define M_IGEO(mp)		(&(mp)->m_ino_geo)

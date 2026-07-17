@@ -557,6 +557,12 @@ xfs_ioctl_setattr_xflags(
 	bool			rtflag = (fa->fsx_xflags & FS_XFLAG_REALTIME);
 	uint64_t		i_flags2;
 
+	if ((fa->fsx_xflags & FS_XFLAG_FILESTREAM) && ip->i_write_stream)
+		return -EINVAL;
+
+	if (rtflag && ip->i_write_stream)
+		return -EINVAL;
+
 	if (rtflag != XFS_IS_REALTIME_INODE(ip)) {
 		/* Can't change realtime flag if any extents are allocated. */
 		if (xfs_inode_has_filedata(ip))
@@ -1200,6 +1206,59 @@ xfs_ioctl_fs_counts(
 	return 0;
 }
 
+static int
+xfs_ioc_write_stream_open(
+	struct file		*filp,
+	void __user		*arg)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(filp));
+	struct fs_write_stream_open wso;
+	int			fd;
+
+	if (copy_from_user(&wso, arg, sizeof(wso)))
+		return -EFAULT;
+
+	fd = xfs_inode_write_stream_open(ip, wso.flags, &wso.stream_id);
+	if (fd < 0)
+		return fd;
+
+	if (copy_to_user(arg, &wso, sizeof(wso)))
+		return -EFAULT;
+	return fd;
+}
+
+static int
+xfs_ioc_write_stream_set(
+	struct file		*filp,
+	unsigned long		arg)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(filp));
+
+	if (!(filp->f_mode & FMODE_WRITE))
+		return -EBADF;
+	return xfs_inode_set_write_stream(ip, (int)arg);
+}
+
+static int
+xfs_ioc_write_stream_get(
+	struct xfs_inode	*ip,
+	void __user		*arg)
+{
+	__u32 stream_id = xfs_inode_get_write_stream(ip);
+
+	return put_user(stream_id, (__u32 __user *)arg);
+}
+
+static int
+xfs_ioc_write_stream_get_max(
+	struct xfs_inode	*ip,
+	void __user		*arg)
+{
+	__u32 nr_streams = xfs_inode_max_write_streams(ip);
+
+	return put_user(nr_streams, (__u32 __user *)arg);
+}
+
 /*
  * These long-unused ioctls were removed from the official ioctl API in 5.17,
  * but retain these definitions so that we can log warnings about them.
@@ -1465,6 +1524,16 @@ xfs_file_ioctl(
 		return xfs_ioc_health_monitor(filp, arg);
 	case XFS_IOC_VERIFY_MEDIA:
 		return xfs_ioc_verify_media(filp, arg);
+	case FS_IOC_WRITE_STREAM_OPEN:
+		return xfs_ioc_write_stream_open(filp, (void __user *)arg);
+	case FS_IOC_WRITE_STREAM_SET:
+		return xfs_ioc_write_stream_set(filp, p);
+	case FS_IOC_WRITE_STREAM_GET:
+		return xfs_ioc_write_stream_get(XFS_I(file_inode(filp)),
+						(void __user *)arg);
+	case FS_IOC_WRITE_STREAM_GET_MAX:
+		return xfs_ioc_write_stream_get_max(XFS_I(file_inode(filp)),
+						    (void __user *)arg);
 
 	default:
 		return -ENOTTY;
