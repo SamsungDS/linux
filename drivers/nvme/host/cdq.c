@@ -371,6 +371,9 @@ static ssize_t nvme_cdq_fops_read(struct file *filep, char __user *buf,
 	if (!READ_ONCE(cdq->valid_mem))
 		return -EINVAL;
 
+	if (READ_ONCE(cdq->full))
+		return -ENOSPC;
+
 	return nvme_traversecopy_cdq(cdq, nbytes, buf);
 }
 
@@ -524,7 +527,7 @@ int nvme_delete_cdq_mcid(struct nvme_ctrl *ctrl, u16 mc_id)
 }
 EXPORT_SYMBOL_GPL(nvme_delete_cdq_mcid);
 
-int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
+int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param, int cdq_aen_type)
 {
 	u16 cdq_id = event_param & NVME_FEAT_CDQ_ID_MASK;
 	struct cdq_nvme_queue *cdq;
@@ -534,6 +537,9 @@ int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param)
 		return xa_err(cdq);
 	if (!cdq->tpt_efd_ctx)
 		return -EINVAL;
+
+	if (cdq_aen_type == NVME_AER_ONE_SHOT_CDQ_FULL)
+		WRITE_ONCE(cdq->full, true);
 
 	eventfd_signal(cdq->tpt_efd_ctx);
 

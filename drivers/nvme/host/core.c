@@ -4765,11 +4765,12 @@ static bool nvme_handle_aen_oneshot(struct nvme_ctrl *ctrl, u32 result, u32 even
 
 	switch (aer_subtype) {
 	case NVME_AER_ONE_SHOT_CDQ_TAIL_PTR:
-		if (nvme_handle_cdq_aen_tpevent(ctrl, event_param))
+		if (nvme_handle_cdq_aen_tpevent(ctrl, event_param, aer_subtype))
 			WARN_ONCE(1, "Error handling CDQ AEN oneshot");
 		break;
 	case NVME_AER_ONE_SHOT_CDQ_FULL:
-		WARN_ONCE(1, "CDQ Full Error one shot event ignored");
+		if (nvme_handle_cdq_aen_tpevent(ctrl, event_param, aer_subtype))
+			WARN_ONCE(1, "CDQ Full Error one shot event ignored");
 		break;
 	case NVME_AER_ONE_SHOT_PWR_TH:
 		WARN_ONCE(1, "Power Threshold Exceeded one shot event ignored");

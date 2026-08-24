@@ -48,6 +48,9 @@ struct cdq_nvme_queue {
 	/* True if mem for chunks and prps is valid */
 	bool valid_mem;
 
+	/* True if a CDQ FULL aen is received from controller */
+	bool full;
+
 	/* How far the CDQ was consumed by the host */
 	u32 host_head;
 
@@ -105,6 +108,6 @@ static inline void nvme_cdq_put(struct cdq_nvme_queue *cdq)
 
 void nvme_delete_cdqs_host(struct nvme_ctrl *ctrl);
 void nvme_free_cdqs(struct nvme_ctrl *ctrl);
-int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param);
+int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param, int cdq_aen_type);
 
 #endif /* _NVME_CDQ_H */
