@@ -39,6 +39,8 @@ struct cdq_nvme_queue {
 	/* Coherent backing store. */
 	struct nvme_cdq_chunk *chunks;
 	unsigned int nr_chunks;
+	unsigned int entries_per_chunk;
+	unsigned int pages_per_chunk;
 
 	/* PRP List pages describing the chunks to the controller (PC_DISCONT). */
 	__le64 *prp_lists[MAX_NR_CDQ_PRPS];

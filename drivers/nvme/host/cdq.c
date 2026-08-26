@@ -44,8 +44,12 @@ static inline int nvme_alloc_cdqmem_chunks(struct cdq_nvme_queue *cdq)
 
 	cdq->chunks[0].vaddr = dma_alloc_coherent(dev, cdq->size_nbyte,
 			&cdq->chunks[0].dma_addr, GFP_KERNEL);
-	if (cdq->chunks[0].vaddr)
+	if (cdq->chunks[0].vaddr) {
+		cdq->chunks[0].size = cdq->size_nbyte;
+		cdq->entries_per_chunk = cdq->size_nbyte / NVME_CDQ_MQ_ENTRY_NRBYTES;
+		cdq->pages_per_chunk = cdq->size_nbyte / NVME_CTRL_PAGE_SIZE;
 		goto out;
+	}
 
 	/* Fall back to allocating several chunks */
 	nr = DIV_ROUND_UP(cdq->size_nbyte, NVME_CDQ_CHUNK_SIZE);
@@ -54,6 +58,8 @@ static inline int nvme_alloc_cdqmem_chunks(struct cdq_nvme_queue *cdq)
 	if (!cdq->chunks)
 		return -ENOMEM;
 
+	cdq->entries_per_chunk = NVME_CDQ_MQ_ENTRY_PER_CHUNK;
+	cdq->pages_per_chunk = NVME_CDQ_PAGES_PER_CHUNK;
 	for (i = 0; i < nr; i++) {
 		cdq->chunks[i].vaddr = dma_alloc_coherent(dev,
 				NVME_CDQ_CHUNK_SIZE, &cdq->chunks[i].dma_addr,
@@ -84,8 +90,8 @@ static inline void nvme_free_cdqmem_prp_lists(struct cdq_nvme_queue *cdq)
 static inline dma_addr_t nvme_get_cdq_pagedma(struct cdq_nvme_queue *cdq,
 					      unsigned int page_idx)
 {
-	return cdq->chunks[page_idx / NVME_CDQ_PAGES_PER_CHUNK].dma_addr +
-		(page_idx % NVME_CDQ_PAGES_PER_CHUNK) * NVME_CTRL_PAGE_SIZE;
+	return cdq->chunks[page_idx / cdq->pages_per_chunk].dma_addr +
+		(page_idx % cdq->pages_per_chunk) * NVME_CTRL_PAGE_SIZE;
 }
 
 static inline int nvme_build_cdqmem_prp_list(struct cdq_nvme_queue *cdq)
@@ -175,8 +181,8 @@ static inline void nvme_release_cdq_backing(struct cdq_nvme_queue *cdq)
 static inline void *nvme_get_cdq_entryvaddr(struct cdq_nvme_queue *cdq,
 					    unsigned int entry_idx)
 {
-	return cdq->chunks[entry_idx / NVME_CDQ_MQ_ENTRY_PER_CHUNK].vaddr +
-		(entry_idx % NVME_CDQ_MQ_ENTRY_PER_CHUNK) * NVME_CDQ_MQ_ENTRY_NRBYTES;
+	return cdq->chunks[entry_idx / cdq->entries_per_chunk].vaddr +
+		(entry_idx % cdq->entries_per_chunk) * NVME_CDQ_MQ_ENTRY_NRBYTES;
 }
 
 /* Advance cdq->host_head at most nrbytes and return actual advanced bytes */
@@ -318,14 +324,14 @@ static ssize_t nvme_traversecopy_cdq(struct cdq_nvme_queue *cdq, size_t max_nrby
 	if (target_nbyte == 0)
 		goto out;
 
-	for (chunks_idx = init_host_head / NVME_CDQ_MQ_ENTRY_PER_CHUNK,
-	     entry_idx = init_host_head % NVME_CDQ_MQ_ENTRY_PER_CHUNK;
+	for (chunks_idx = init_host_head / cdq->entries_per_chunk,
+	     entry_idx = init_host_head % cdq->entries_per_chunk;
 	     copied_nbyte < target_nbyte;
 	     chunks_idx = (chunks_idx + 1) % cdq->nr_chunks, entry_idx = 0) {
 		from_buf = cdq->chunks[chunks_idx].vaddr +
 			(entry_idx * NVME_CDQ_MQ_ENTRY_NRBYTES);
 		tx_nbytes = min(target_nbyte - copied_nbyte,
-				NVME_CDQ_CHUNK_SIZE - (entry_idx * NVME_CDQ_MQ_ENTRY_NRBYTES));
+				(cdq->entries_per_chunk - entry_idx) * NVME_CDQ_MQ_ENTRY_NRBYTES);
 		if (copy_to_user(to_buf, from_buf, tx_nbytes))
 			goto err_out;
 		copied_nbyte += tx_nbytes;
