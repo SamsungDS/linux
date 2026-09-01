@@ -74,6 +74,13 @@ struct cdq_nvme_queue {
 	spinlock_t sf_lock;
 	bool sf_inflight;
 
+	/*
+	 * Deferred re-submission of the set-feature cmd. nvme_endio_sfcmd_cdq()
+	 * runs in interrupt/softirq (end_io) context, where blk_execute_rq_nowait()
+	 * is not safe to call inline; the actual resubmit happens on nvme_wq.
+	 */
+	struct work_struct sf_rearm_work;
+
 	/* Manage refs for read FD and controller xarray */
 	struct kref ref;
 

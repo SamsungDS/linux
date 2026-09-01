@@ -211,6 +211,28 @@ static size_t nvme_advance_cdq(struct cdq_nvme_queue *cdq, size_t max_nrbyte)
 
 static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq);
 
+/*
+ * Deferred re-submission of the set-feature cmd. Runs on nvme_wq (process
+ * context) -- nvme_endio_sfcmd_cdq() calls us from an end_io (interrupt/
+ * softirq) completion callback, where blk_execute_rq_nowait() is not safe
+ * to call inline (it dispatches the hw queue synchronously).
+ */
+static void nvme_cdq_sf_rearm_work(struct work_struct *work)
+{
+	struct cdq_nvme_queue *cdq = container_of(work, struct cdq_nvme_queue,
+						  sf_rearm_work);
+
+	/*
+	 * The CDQ may have been deleted while this work was queued/running;
+	 * don't touch a controller feature that is no longer ours.
+	 */
+	if (READ_ONCE(cdq->valid_mem))
+		nvme_submit_sfcmd_cdq(cdq);
+
+	/* Drop the ref taken when this work item was queued. */
+	nvme_cdq_put(cdq);
+}
+
 /* updates cntl_head, exits sf_inflight and re-arms if needed */
 static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 					       blk_status_t status,
@@ -232,9 +254,16 @@ static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 	}
 	spin_unlock_irqrestore(&cdq->sf_lock, flags);
 
-	/* Re-arm (takes its own ref) before dropping ours, so cdq stays alive. */
-	if (rearm)
-		nvme_submit_sfcmd_cdq(cdq);
+	/*
+	 * Re-arm on nvme_wq, not inline: this is interrupt/softirq context,
+	 * and nvme_submit_sfcmd_cdq() calls blk_execute_rq_nowait(), which
+	 * asserts process context. Take a ref for the queued work before
+	 * dropping ours, so cdq stays alive until the work runs.
+	 */
+	if (rearm) {
+		nvme_cdq_get(cdq);
+		queue_work(nvme_wq, &cdq->sf_rearm_work);
+	}
 
 	nvme_cdq_put(cdq);
 	return RQ_END_IO_NONE;
@@ -600,6 +629,7 @@ int nvme_create_cdq(struct nvme_ctrl *ctrl, const u32 entry_nr, const u16 mc_id,
 	cdq->ctrl = ctrl;
 	cdq->size_nbyte = (u32)size_nbyte;
 	spin_lock_init(&cdq->sf_lock);
+	INIT_WORK(&cdq->sf_rearm_work, nvme_cdq_sf_rearm_work);
 
 	ret = nvme_create_cdq_backing(cdq);
 	if (ret) {
