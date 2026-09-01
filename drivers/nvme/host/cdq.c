@@ -226,7 +226,7 @@ static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 	spin_lock_irqsave(&cdq->sf_lock, flags);
 	cdq->sf_inflight = false;
 	/* cntl_head was just written above, plain read under the lock. */
-	if (READ_ONCE(cdq->host_head) != cdq->cntl_head) {
+	if (READ_ONCE(cdq->host_head) != cdq->cntl_head || READ_ONCE(cdq->pending_tpt)) {
 		cdq->sf_inflight = true;
 		rearm = true;
 	}
