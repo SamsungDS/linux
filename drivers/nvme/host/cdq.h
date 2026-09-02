@@ -12,6 +12,9 @@
 #define NVME_CDQ_MQ_PHASE_MASK		0x1
 #define NVME_CDQ_MQ_PHASE_OFFSET	(NVME_CDQ_MQ_ENTRY_NRBYTES - 1)
 
+/* Static TPT advance value */
+#define NVME_CDQ_TPT_ADVANCE		1
+
 /*
  * The CDQ backing is a set of coherent DMA chunks expressed in
  * host pages to match dma_alloc_coherency granularity.
@@ -67,6 +70,7 @@ struct cdq_nvme_queue {
 
 	/* ETPT offset to arm on next set-feature send, 0 = none */
 	u32 pending_tpt;
+	u32 sent_tpt;
 
 	u8 phase_bit;
 

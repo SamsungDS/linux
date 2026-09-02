@@ -178,11 +178,21 @@ static inline void nvme_release_cdq_backing(struct cdq_nvme_queue *cdq)
 }
 
 
-static inline void *nvme_get_cdq_entryvaddr(struct cdq_nvme_queue *cdq,
-					    unsigned int entry_idx)
+static inline void *nvme_get_cdq_entryvaddr(const struct cdq_nvme_queue *cdq,
+					    const unsigned int entry_idx)
 {
 	return cdq->chunks[entry_idx / cdq->entries_per_chunk].vaddr +
 		(entry_idx % cdq->entries_per_chunk) * NVME_CDQ_MQ_ENTRY_NRBYTES;
+}
+
+/* Test to se if idx offset entry is new */
+static bool nvme_test_new_entry(const struct cdq_nvme_queue *cdq, const u32 idx)
+{
+	const void *entry = nvme_get_cdq_entryvaddr(cdq, idx);
+	const u8 phase_bit = *(const u8 *)(entry + NVME_CDQ_MQ_PHASE_OFFSET) &
+			      NVME_CDQ_MQ_PHASE_MASK;
+
+	return phase_bit != cdq->phase_bit;
 }
 
 /* Advance cdq->host_head at most nrbytes and return actual advanced bytes */
@@ -245,6 +255,16 @@ static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 	WRITE_ONCE(cdq->cntl_head, cdq->sent_head);
 	blk_mq_free_request(rq);
 
+	/* Signal user if the tpt entry was reached before the set feature completion */
+	if (cdq->sent_tpt && !READ_ONCE(cdq->pending_tpt) && cdq->tpt_efd_ctx) {
+		const u32 cdq_nrentry = cdq->size_nbyte / NVME_CDQ_MQ_ENTRY_NRBYTES;
+		const u32 target_idx = (cdq->sent_head + NVME_CDQ_TPT_ADVANCE - 1) %
+					cdq_nrentry;
+
+		if (nvme_test_new_entry(cdq, target_idx))
+			eventfd_signal(cdq->tpt_efd_ctx);
+	}
+
 	spin_lock_irqsave(&cdq->sf_lock, flags);
 	cdq->sf_inflight = false;
 	/* cntl_head was just written above, plain read under the lock. */
@@ -284,13 +304,6 @@ static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq)
 	c.features.fid = cpu_to_le32(NVME_FEAT_CDQ);
 
 	if (unlikely(tpt != 0)) {
-		/*
-		 * FIXME: There is a small chance that the sent tpt will have
-		 * already been handled by the time this command completes. If
-		 * we find this to be true in the CDQ, we need to send a
-		 * subsequent feature_id to disable the tail pointer trigger.
-		 * section 5.1.25.1.23 nvme base spec.
-		 */
 		dword11 |= NVME_FEAT_CDQ_ETPT_MASK;
 		c.features.dword13 = cpu_to_le32((head + tpt) % cdq_nrentry);
 	}
@@ -313,6 +326,7 @@ static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq)
 
 	cdq->sent_head = head;
 	WRITE_ONCE(cdq->pending_tpt, 0);
+	WRITE_ONCE(cdq->sent_tpt, tpt);
 	nvme_init_request(rq, &c);
 	rq->end_io = nvme_endio_sfcmd_cdq;
 	rq->end_io_data = cdq;
@@ -377,7 +391,7 @@ out:
 		nvme_kick_cdq(cdq);
 	} else if (cdq->tpt_efd_ctx) {
 		/* Controller will one-shot AEN when more entries are added */
-		WRITE_ONCE(cdq->pending_tpt, 1);
+		WRITE_ONCE(cdq->pending_tpt, NVME_CDQ_TPT_ADVANCE);
 		nvme_kick_cdq(cdq);
 	}
 	return copied_nbyte;
