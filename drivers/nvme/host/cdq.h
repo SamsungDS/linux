@@ -68,8 +68,10 @@ struct cdq_nvme_queue {
 	/* Last acked CDQ head update. Trails host_head.*/
 	u32 cntl_head;
 
-	/* ETPT offset to arm on next set-feature send, 0 = none */
-	u32 pending_tpt;
+	/* ETPT offset to arm on next set-feature send, 0 = none. */
+	atomic_t pending_tpt;
+
+	/* ETPT offset sent by the in-flight set-feature cmd, 0 = none */
 	u32 sent_tpt;
 
 	u8 phase_bit;

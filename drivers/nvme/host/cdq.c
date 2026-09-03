@@ -256,7 +256,7 @@ static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 	blk_mq_free_request(rq);
 
 	/* Signal user if the tpt entry was reached before the set feature completion */
-	if (cdq->sent_tpt && !READ_ONCE(cdq->pending_tpt) && cdq->tpt_efd_ctx) {
+	if (cdq->sent_tpt && !atomic_read(&cdq->pending_tpt) && cdq->tpt_efd_ctx) {
 		const u32 cdq_nrentry = cdq->size_nbyte / NVME_CDQ_MQ_ENTRY_NRBYTES;
 		const u32 target_idx = (cdq->sent_head + NVME_CDQ_TPT_ADVANCE - 1) %
 					cdq_nrentry;
@@ -268,7 +268,7 @@ static enum rq_end_io_ret nvme_endio_sfcmd_cdq(struct request *rq,
 	spin_lock_irqsave(&cdq->sf_lock, flags);
 	cdq->sf_inflight = false;
 	/* cntl_head was just written above, plain read under the lock. */
-	if (READ_ONCE(cdq->host_head) != cdq->cntl_head || READ_ONCE(cdq->pending_tpt)) {
+	if (READ_ONCE(cdq->host_head) != cdq->cntl_head || atomic_read(&cdq->pending_tpt)) {
 		cdq->sf_inflight = true;
 		rearm = true;
 	}
@@ -296,7 +296,7 @@ static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq)
 	struct request *rq;
 	unsigned long flags;
 	u32 head = READ_ONCE(cdq->host_head);
-	u32 tpt = READ_ONCE(cdq->pending_tpt);
+	u32 tpt = atomic_xchg(&cdq->pending_tpt, 0);
 	u32 dword11 = cdq->id & NVME_FEAT_CDQ_ID_MASK;
 	u32 cdq_nrentry = cdq->size_nbyte / NVME_CDQ_MQ_ENTRY_NRBYTES;
 
@@ -315,9 +315,12 @@ static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq)
 				  BLK_MQ_REQ_NOWAIT);
 	if (IS_ERR(rq)) {
 		/*
-		 * No admin tag right now and we cannot sleep. Drop the slot; the
-		 * next read() will re-arm.
+		 * No admin tag right now and we cannot sleep. Hand the claimed
+		 * arm back and drop the slot; the next read() will re-arm.
 		 */
+		if (tpt)
+			atomic_set(&cdq->pending_tpt, tpt);
+
 		spin_lock_irqsave(&cdq->sf_lock, flags);
 		cdq->sf_inflight = false;
 		spin_unlock_irqrestore(&cdq->sf_lock, flags);
@@ -325,7 +328,6 @@ static void nvme_submit_sfcmd_cdq(struct cdq_nvme_queue *cdq)
 	}
 
 	cdq->sent_head = head;
-	WRITE_ONCE(cdq->pending_tpt, 0);
 	WRITE_ONCE(cdq->sent_tpt, tpt);
 	nvme_init_request(rq, &c);
 	rq->end_io = nvme_endio_sfcmd_cdq;
@@ -390,8 +392,8 @@ out:
 	if (copied_nbyte) {
 		nvme_kick_cdq(cdq);
 	} else if (cdq->tpt_efd_ctx) {
-		/* Controller will one-shot AEN when more entries are added */
-		WRITE_ONCE(cdq->pending_tpt, NVME_CDQ_TPT_ADVANCE);
+		/* Controller will one-shot AEN when more entries are added. */
+		atomic_set(&cdq->pending_tpt, NVME_CDQ_TPT_ADVANCE);
 		nvme_kick_cdq(cdq);
 	}
 	return copied_nbyte;
