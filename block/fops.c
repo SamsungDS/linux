@@ -19,6 +19,7 @@
 #include <linux/iomap.h>
 #include <linux/module.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/dma-buf-io.h>
 #include "blk.h"
 
 static inline struct inode *bdev_file_inode(struct file *file)
@@ -971,12 +972,16 @@ int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
 			     struct dma_buf_io_ctx *ctx)
 {
 	struct gendisk *disk = bdev->bd_disk;
+	int ret;
 
 	if (!(file->f_flags & O_DIRECT))
 		return -EINVAL;
 	if (!disk->fops->init_dma_buf_io_ctx)
 		return -EOPNOTSUPP;
-	return disk->fops->init_dma_buf_io_ctx(bdev, ctx);
+	ret = disk->fops->init_dma_buf_io_ctx(bdev, ctx);
+	if (!ret)
+		ctx->registered_devt = disk_devt(disk);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(bdev_init_dma_buf_io_ctx);
 

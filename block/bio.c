@@ -19,6 +19,7 @@
 #include <linux/blk-crypto.h>
 #include <linux/xarray.h>
 #include <linux/kmemleak.h>
+#include <linux/dma-buf-io.h>
 
 #include <trace/events/block.h>
 #include "blk.h"
@@ -1290,6 +1291,16 @@ static inline bool bio_iov_bvec_aligned(const struct bio *bio,
 }
 #endif
 
+/*
+ * A dma-buf map is only valid for the disk it was registered on, but a file's
+ * data can move to another device after the registration.
+ */
+static bool bio_dmabuf_map_valid(struct bio *bio, const struct iov_iter *iter)
+{
+	return iter->dmabuf_map->ctx->registered_devt ==
+	       disk_devt(bio->bi_bdev->bd_disk);
+}
+
 /**
  * bio_iov_iter_get_pages - add user or kernel pages to a bio
  * @bio: bio to add pages to
@@ -1322,6 +1333,9 @@ int bio_iov_iter_get_pages(struct bio *bio, struct iov_iter *iter,
 
 	if (WARN_ON_ONCE(bio_flagged(bio, BIO_CLONED)))
 		return -EIO;
+
+	if (iov_iter_is_dmabuf_map(iter) && !bio_dmabuf_map_valid(bio, iter))
+		return -EXDEV;
 
 	if (bio_iov_iter_set(bio, iter)) {
 		if (iov_iter_is_bvec(iter) &&

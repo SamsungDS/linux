@@ -3,6 +3,7 @@
 #define __DMA_BUF_IO_H__
 
 #include <linux/dma-buf.h>
+#include <linux/kdev_t.h>
 
 struct dma_buf_io_ctx;
 struct dma_buf_io_map;
@@ -62,6 +63,8 @@ struct dma_buf_io_ctx {
 
 	void					*dev_priv;
 	const struct dma_buf_io_ops		*dev_ops;
+
+	dev_t					registered_devt;
 };
 
 int dma_buf_io_ctx_create(struct file *file,
