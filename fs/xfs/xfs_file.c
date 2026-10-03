@@ -320,6 +320,11 @@ xfs_file_read_iter(
 	if (xfs_is_shutdown(mp))
 		return -EIO;
 
+	/* a device mapping can only be read by a direct I/O bio */
+	if (iov_iter_is_dmabuf_map(to) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT)))
+		return -EOPNOTSUPP;
+
 	if (IS_DAX(inode))
 		ret = xfs_file_dax_read(iocb, to);
 	else if (iocb->ki_flags & IOCB_DIRECT)
@@ -1176,6 +1181,11 @@ xfs_file_write_iter(
 			return ret;
 	}
 
+	/* a device mapping can only be written by a direct I/O bio */
+	if (iov_iter_is_dmabuf_map(from) &&
+	    (IS_DAX(inode) || !(iocb->ki_flags & IOCB_DIRECT)))
+		return -EOPNOTSUPP;
+
 	if (IS_DAX(inode))
 		return xfs_file_dax_write(iocb, from);
 
@@ -1189,6 +1199,9 @@ xfs_file_write_iter(
 		ret = xfs_file_dio_write(iocb, from);
 		if (ret != -ENOTBLK)
 			return ret;
+		/* the page cache cannot copy from a device mapping */
+		if (iov_iter_is_dmabuf_map(from))
+			return -EOPNOTSUPP;
 	}
 
 	if (xfs_is_zoned_inode(ip))
@@ -2153,10 +2166,27 @@ xfs_file_mmap_prepare(
 	return 0;
 }
 
+/*
+ * A realtime file's data lives on the realtime device, anything else on the
+ * data device.  If a file moves between them after registration, the block
+ * layer cross-device check refuses the I/O.
+ */
+static int
+xfs_file_init_dma_buf_io_ctx(
+	struct file		*file,
+	struct dma_buf_io_ctx	*ctx)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(file));
+
+	return iomap_file_init_dma_buf_io_ctx(file,
+			xfs_inode_buftarg(ip)->bt_bdev, ctx);
+}
+
 const struct file_operations xfs_file_operations = {
 	.llseek		= xfs_file_llseek,
 	.read_iter	= xfs_file_read_iter,
 	.write_iter	= xfs_file_write_iter,
+	.init_dma_buf_io_ctx = xfs_file_init_dma_buf_io_ctx,
 	.splice_read	= xfs_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.iopoll		= iocb_bio_iopoll,
