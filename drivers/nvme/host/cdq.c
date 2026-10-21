@@ -584,15 +584,20 @@ int nvme_handle_cdq_aen_tpevent(struct nvme_ctrl *ctrl, u32 event_param, int cdq
 	struct cdq_nvme_queue *cdq;
 
 	cdq = xa_load(&ctrl->cdqs, cdq_id);
+	if (!cdq) {
+		WARN_ONCE(1, "Received an AEN for a non-existent cdq (id: %d)", cdq_id);
+		return -ENOENT;
+	}
 	if (xa_is_err(cdq))
 		return xa_err(cdq);
-	if (!cdq->tpt_efd_ctx)
-		return -EINVAL;
 
-	if (cdq_aen_type == NVME_AER_ONE_SHOT_CDQ_FULL)
+	if (cdq_aen_type == NVME_AER_ONE_SHOT_CDQ_FULL) {
+		WARN_ONCE(1, "Received a CDQ FULL for cdq (id: %d)", cdq_id);
 		WRITE_ONCE(cdq->full, true);
+	}
 
-	eventfd_signal(cdq->tpt_efd_ctx);
+	if (cdq->tpt_efd_ctx)
+		eventfd_signal(cdq->tpt_efd_ctx);
 
 	return 0;
 }
